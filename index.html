@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Viz Lab - Embedding Visualizer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f1a;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    .header {
+      background: #1a1a2e;
+      padding: 16px 24px;
+      border-bottom: 1px solid #2a2a4e;
+    }
+    .header h1 {
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .header p {
+      font-size: 13px;
+      color: #888;
+      margin-top: 4px;
+    }
+    .main {
+      display: flex;
+      height: calc(100vh - 80px);
+    }
+    .sidebar {
+      width: 280px;
+      background: #1a1a2e;
+      padding: 16px;
+      border-right: 1px solid #2a2a4e;
+      overflow-y: auto;
+    }
+    .sidebar h2 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .control-group {
+      margin-bottom: 20px;
+    }
+    .control-group label {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: #ccc;
+    }
+    .control-group select,
+    .control-group input[type="number"] {
+      width: 100%;
+      padding: 8px 10px;
+      background: #252542;
+      border: 1px solid #3a3a5a;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-size: 13px;
+    }
+    .control-group select:focus,
+    .control-group input:focus {
+      outline: none;
+      border-color: #5a5a8a;
+    }
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #4a4a7a;
+      border: none;
+      border-radius: 4px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #5a5a8a;
+    }
+    button:active {
+      background: #3a3a6a;
+    }
+    .stats {
+      background: #252542;
+      padding: 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: monospace;
+      line-height: 1.6;
+    }
+    .stats-row {
+      display: flex;
+      justify-content: space-between;
+    }
+    .stats-label {
+      color: #888;
+    }
+    .stats-value {
+      color: #6a6;
+    }
+    .canvas-container {
+      flex: 1;
+      display: flex;
+      gap: 16px;
+      padding: 16px;
+    }
+    .canvas-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #1a1a2e;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .canvas-header {
+      padding: 12px 16px;
+      background: #252542;
+      font-size: 14px;
+      font-weight: 600;
+      border-bottom: 1px solid #2a2a4e;
+    }
+    .canvas-body {
+      flex: 1;
+      position: relative;
+    }
+    canvas {
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    .mode-indicator {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 4px 8px;
+      background: rgba(0,0,0,0.6);
+      border-radius: 4px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .mode-indicator.pan { color: #6af; }
+    .mode-indicator.lasso { color: #f6a; }
+    .instructions {
+      font-size: 12px;
+      color: #666;
+      margin-top: 16px;
+      padding: 12px;
+      background: #151528;
+      border-radius: 4px;
+    }
+    .instructions h3 {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    .instructions ul {
+      list-style: none;
+      padding-left: 0;
+    }
+    .instructions li {
+      margin-bottom: 4px;
+    }
+    .instructions kbd {
+      display: inline-block;
+      padding: 2px 5px;
+      background: #2a2a4e;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Viz Lab - Embedding Visualizer</h1>
+    <p>Reference implementations for Euclidean and Hyperbolic (Poincare disk) geometries</p>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <h2>Dataset</h2>
+      <div class="control-group">
+        <label>Geometry</label>
+        <select id="geometry">
+          <option value="euclidean">Euclidean</option>
+          <option value="poincare">Hyperbolic (Poincare)</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label>Number of Points</label>
+        <select id="numPoints">
+          <option value="1000">1,000</option>
+          <option value="10000" selected>10,000</option>
+          <option value="50000">50,000</option>
+          <option value="100000">100,000</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label>Number of Labels</label>
+        <input type="number" id="labelCount" value="10" min="1" max="20">
+      </div>
+      <div class="control-group">
+        <label>Random Seed</label>
+        <input type="number" id="seed" value="42" min="0">
+      </div>
+      <div class="control-group">
+        <button id="generateBtn">Generate Dataset</button>
+      </div>
+
+      <h2>Stats</h2>
+      <div class="stats">
+        <div class="stats-row">
+          <span class="stats-label">Points:</span>
+          <span class="stats-value" id="statPoints">-</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">Selected:</span>
+          <span class="stats-value" id="statSelected">0</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">Hovered:</span>
+          <span class="stats-value" id="statHovered">-</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">Frame Time:</span>
+          <span class="stats-value" id="statFrameTime">-</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">Lasso Time:</span>
+          <span class="stats-value" id="statLassoTime">-</span>
+        </div>
+      </div>
+
+      <div class="instructions">
+        <h3>Controls</h3>
+        <ul>
+          <li><kbd>Drag</kbd> Pan view</li>
+          <li><kbd>Scroll</kbd> Zoom in/out</li>
+          <li><kbd>Shift+Drag</kbd> Lasso select</li>
+          <li><kbd>Dbl-click</kbd> Clear selection</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="canvas-container">
+      <div class="canvas-wrapper">
+        <div class="canvas-header">Reference Implementation (Canvas2D)</div>
+        <div class="canvas-body" id="canvasBody">
+          <canvas id="canvas"></canvas>
+          <div class="mode-indicator pan" id="modeIndicator">PAN</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/ui/app.ts"></script>
+</body>
+</html>
