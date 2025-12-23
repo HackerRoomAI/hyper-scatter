@@ -42,11 +42,11 @@ This is a testbed for building a high-performance embedding visualizer supportin
 
 ## The Task: Create Optimized Candidate
 
-**Goal: 1 million points at 60 FPS**
+**Goal: 20 million points at 60 FPS**
 
 Create an optimized renderer in `src/impl_candidate/` that:
 1. Passes all accuracy tests against the reference
-2. Achieves 60 FPS with 1M points
+2. Achieves 60 FPS with 20M points
 
 ### Suggested Optimization Strategies
 

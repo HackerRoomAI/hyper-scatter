@@ -87,7 +87,7 @@ We will implement in this order:
 ## 0) Background and Purpose
 
 ### What we are trying to build
-We want an interactive embedding visualization component that can handle large point clouds (commonly 100k–1M+ points) and supports **multiple geometries**.
+We want an interactive embedding visualization component that can handle large point clouds (commonly 100k–20M+ points) and supports **multiple geometries**.
 
 The intent is not limited to hyperbolic space. In the future, we may support additional geometry/camera models (e.g. spherical projections and other non-Euclidean navigation semantics).
 
@@ -540,8 +540,8 @@ Minimum required checks:
 **Performance targets (need to be made concrete):**
 - Define target devices and minimum acceptable interactivity.
 - As a starting point, treat these as stretch goals:
-  - Euclidean: smooth pan/zoom at N=1,000,000
-  - Hyperbolic: smooth pan/zoom near boundary at N=1,000,000
+  - Euclidean: smooth pan/zoom at N=20,000,000
+  - Hyperbolic: smooth pan/zoom near boundary at N=20,000,000
 
 The harness must report performance numerically so we can compare candidate versions over time.
 
