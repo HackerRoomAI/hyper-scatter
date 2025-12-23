@@ -270,10 +270,18 @@
 <body>
   <div class="container">
     <h1>Viz Lab - Performance Benchmarks</h1>
-    <p class="subtitle">Measure rendering and interaction performance for Canvas2D implementations</p>
+    <p class="subtitle">Measure rendering and interaction performance (WebGL candidate or Canvas2D reference — one at a time)</p>
 
     <div class="controls">
       <div class="control-row">
+        <div class="control-group">
+          <label>Renderer</label>
+          <select id="rendererSelect">
+            <option value="webgl" selected>WebGL Candidate</option>
+            <option value="reference">Reference (Canvas2D)</option>
+          </select>
+        </div>
+
         <div class="control-group">
           <label>Point Counts</label>
           <select id="pointCountsSelect" multiple size="4">
@@ -284,6 +292,11 @@
             <option value="250000">250,000</option>
             <option value="500000">500,000</option>
             <option value="1000000">1,000,000</option>
+            <option value="2000000">2,000,000</option>
+            <option value="3000000">3,000,000</option>
+            <option value="5000000">5,000,000</option>
+            <option value="10000000">10,000,000</option>
+            <option value="20000000">20,000,000</option>
           </select>
         </div>
 
@@ -322,6 +335,8 @@
 
     <div class="canvas-container">
       <canvas id="canvas"></canvas>
+      <!-- Hidden canvas for candidate renderer (WebGL needs separate canvas from 2D) -->
+      <canvas id="candidateCanvas" style="display: none;"></canvas>
     </div>
 
     <div class="results">
@@ -359,6 +374,7 @@
     import './src/benchmarks/browser.ts';
 
     const canvas = document.getElementById('canvas');
+    const candidateCanvas = document.getElementById('candidateCanvas');
     const runBenchmarkBtn = document.getElementById('runBenchmark');
     const runAccuracyBtn = document.getElementById('runAccuracy');
     const copyResultsBtn = document.getElementById('copyResults');
@@ -384,6 +400,12 @@
       const container = canvas.parentElement;
       const rect = container.getBoundingClientRect();
       canvas.style.width = (rect.width - 20) + 'px';
+
+      // Keep the candidate canvas in sync so toggling between renderers doesn't
+      // change layout or break any code paths that rely on client sizes.
+      if (candidateCanvas) {
+        candidateCanvas.style.width = canvas.style.width;
+      }
     }
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
@@ -392,10 +414,12 @@
 
     // Get config from UI
     function getConfig() {
+      const rendererSelect = document.getElementById('rendererSelect');
       const pointCountsSelect = document.getElementById('pointCountsSelect');
       const geometriesSelect = document.getElementById('geometriesSelect');
 
       return {
+        renderer: rendererSelect.value,
         pointCounts: Array.from(pointCountsSelect.selectedOptions).map(o => parseInt(o.value)),
         geometries: Array.from(geometriesSelect.selectedOptions).map(o => o.value),
         warmupFrames: 5,

@@ -1,160 +1,128 @@
-# viz-lab: Embedding Visualizer Performance Lab
+# viz-lab: Candidate Implementation Engineer Guide
 
-## Current State
+This repo is a **correctness + performance lab** for an embedding scatterplot that supports both:
 
-This is a testbed for building a high-performance embedding visualizer supporting both **Euclidean** and **Hyperbolic (Poincaré disk)** geometries.
+- **Euclidean** 2D scatter
+- **Hyperbolic embeddings in the Poincaré disk** (geometry-aware camera + interactions)
 
-### What Exists
+This document is for working on the **optimized candidate renderer**.
 
-1. **Reference Implementations** (`src/impl_reference/`)
-   - `euclidean_reference.ts` - Naive Canvas2D Euclidean renderer
-   - `hyperbolic_reference.ts` - Naive Canvas2D Poincaré disk renderer
-   - These are **correct but slow** - they serve as ground truth
+If you are working on the **harness** (benchmarks, reference, runners, CI-ish glue), use **`CLAUDE.md`**. If you need to change harness semantics, flag your concerns to the user if it limits your performance potential. The user will pass on your concerns to the harness engineer.
 
-2. **Core Math** (`src/core/math/`)
-   - `euclidean.ts` - Simple pan/zoom transforms
-   - `poincare.ts` - Möbius transforms, hyperbolic distance, geodesics
+For the full spec and rationale, see **`TASK.md`**.
 
-3. **Benchmark Suite** (`src/benchmarks/`)
-   - `node-bench.ts` - Pure math benchmarks (no DOM)
-   - `browser.ts` - Canvas2D rendering benchmarks
-   - `accuracy.ts` - Reference vs candidate comparison
-   - See `src/benchmarks/README.md` for full documentation
+---
 
-4. **Demo App** (`index.html`, `src/main.ts`)
-   - Interactive visualization with geometry toggle
-   - Lasso selection, hover, pan/zoom
+## Where you should work (candidate code)
 
-### Current Performance
+The candidate path already exists and is wired into the benchmark/accuracy harness:
 
-| Points | Euclidean FPS | Hyperbolic FPS |
-|--------|---------------|----------------|
-| 10k    | ~57           | ~50            |
-| 100k   | ~12           | ~3             |
-| 500k   | ~2            | <1             |
-| 1M     | ~0.7          | <0.5           |
+- `src/impl_candidate/`
 
-**Bottlenecks:**
-- O(n) render loop (drawing each point individually)
-- O(n) hit test (checking every point on hover)
-- O(n) lasso selection
-- Hyperbolic: expensive Möbius transform per point per frame
+The reference implementations (ground truth) are:
 
-## The Task: Create Optimized Candidate
+- `src/impl_reference/euclidean_reference.ts`
+- `src/impl_reference/hyperbolic_reference.ts`
 
-**Goal: 20 million points at 60 FPS**
+Core math (shared by reference + candidate; **do not “approximate” this in the candidate**):
 
-Create an optimized renderer in `src/impl_candidate/` that:
-1. Passes all accuracy tests against the reference
-2. Achieves 60 FPS with 20M points
+- `src/core/math/euclidean.ts`
+- `src/core/math/poincare.ts`
 
-### Suggested Optimization Strategies
+---
 
-1. **WebGL Rendering**
-   - Batch all points into a single draw call
-   - GPU-accelerated point sprites
-   - Möbius transform in vertex shader
+## How the candidate is selected in the harness
 
-2. **Spatial Indexing**
-   - Quadtree or R-tree for hit testing
-   - Frustum culling for off-screen points
+The browser harness supports two renderer modes:
 
-3. **Level of Detail**
-   - Aggregate distant points
-   - Progressive rendering
+- `reference`: Canvas2D reference implementations
+- `webgl`: WebGL2 candidate implementations
 
-4. **Web Workers**
-   - Offload selection to worker thread
-   - Parallel point-in-polygon
+Selection happens in **`src/benchmarks/browser.ts`**:
 
-### Iteration Workflow
+- For performance benchmarks (`runBenchmarks`):
+  - `renderer: 'webgl'` ⇒ `EuclideanWebGLCandidate` / `HyperbolicWebGLCandidate`
+  - `renderer: 'reference'` ⇒ `EuclideanReference` / `HyperbolicReference`
+- For accuracy tests (`runAccuracyBenchmarks`):
+  - reference uses the visible `#canvas` (Canvas2D)
+  - candidate uses a separate hidden/alternate `#candidateCanvas` (WebGL)
 
-```bash
-# 1. Run math tests first (fast feedback)
-npm run bench
+If you add a new candidate class/file, you typically only need to adjust the imports/constructor selection in `src/benchmarks/browser.ts`.
 
-# 2. Run browser accuracy tests
-npm run bench:browser
-# Click "Run Accuracy Tests"
+---
 
-# 3. Run performance benchmark
-# Click "Run Performance Benchmark"
-```
+## Fast iteration loop (correctness first, then performance)
 
-### Integration Point
+The harness provides:
 
-Edit `src/benchmarks/browser.ts` line ~305:
+1) **Correctness gates** (reference vs candidate accuracy)
+2) **Performance benchmarks** (render + interaction workloads)
 
-```typescript
-import { MyOptimizedRenderer } from '../impl_candidate/my_renderer.js';
+The **exact commands/flags and how to run them** are owned by the harness engineer and documented in **`CLAUDE.md`** (and the benchmark docs in `src/benchmarks/README.md`).
 
-const candidateRenderer: Renderer = geometry === 'euclidean'
-  ? new EuclideanReference()
-  : new MyOptimizedRenderer();  // <-- Your implementation
-```
+Operational expectations:
 
-### Accuracy Requirements
+- Prefer running benchmarks via the **CLI runners** (reproducible, scriptable, fewer UI variables).
+- For **performance** numbers, do **not** rely on **headless** runs as the source of truth (headless can change GPU/RAF timing and skew results). Use headed/interactive runs for final perf validation; headless is fine for quick smoke checks and automation.
 
-| Operation | Tolerance |
-|-----------|-----------|
-| Projection | < 1e-6 pixels |
-| Pan/Zoom state | < 1e-10 |
-| Hit test | Exact match |
-| Lasso select | Exact match |
+As a candidate engineer, your iteration loop should be:
 
-## File Structure
+- run the accuracy suite after any semantics-affecting change
+- only optimize after you’re passing correctness
+- re-run benchmarks frequently to catch regressions
 
-```
-viz_impl/
-├── index.html              # Demo app entry
-├── benchmark.html          # Benchmark UI
-├── src/
-│   ├── main.ts             # Demo app logic
-│   ├── core/
-│   │   ├── types.ts        # Renderer interface contract
-│   │   ├── dataset.ts      # Test data generation
-│   │   ├── math/
-│   │   │   ├── euclidean.ts
-│   │   │   └── poincare.ts # Möbius transforms
-│   │   └── selection/
-│   │       └── point_in_polygon.ts
-│   ├── impl_reference/     # Ground truth (slow but correct)
-│   │   ├── euclidean_reference.ts
-│   │   └── hyperbolic_reference.ts
-│   ├── impl_candidate/     # YOUR OPTIMIZED IMPLEMENTATIONS
-│   │   └── (create files here)
-│   └── benchmarks/
-│       ├── README.md       # Detailed benchmark docs
-│       ├── utils.ts
-│       ├── accuracy.ts
-│       ├── browser.ts
-│       └── node-bench.ts
-└── package.json
-```
+---
 
-## Key Hyperbolic Math
+## Keep a running optimization log (recommended)
 
-The Poincaré disk represents hyperbolic space inside the unit disk (|z| < 1).
+Keep a short, append-only log of what you tried and what happened. This saves time when you revisit the project or hand it off.
 
-**Möbius Transform** (camera translation):
-```
-T_a(z) = (z - a) / (1 - conj(a) * z)
-```
+- Suggested location: `research/candidate_optimization_log.md`
+- What to record: change summary, point counts/geometries tested, results (FPS / ms), correctness notes, and whether the technique was a win/loss.
 
-**Inverse**:
-```
-T_a^{-1}(w) = (w + a) / (1 + conj(a) * w)
-```
+---
 
-**Anchor-invariant pan**: Solve for new camera `a'` such that the point under the cursor stays under the cursor after dragging.
+## Product constraints to keep in mind
 
-See `src/core/math/poincare.ts` for implementation details.
+Even though the solution is validated in this harness, it will ship in a **web-based product**:
 
-## Commands
+- It should work across major browsers and “good consumer hardware” (not just one dev GPU/driver).
+- Avoid relying on quirks that only work in one browser/GPU stack.
+- The harness runs on a representative machine to approximate real conditions, but you should still keep portability in mind.
 
-```bash
-npm run dev          # Start dev server (localhost:5173)
-npm run bench        # Run Node.js benchmarks
-npm run bench:browser # Open browser benchmark page
-npm run build        # Production build
-```
+Also: keep aesthetics in mind (pleasant point rendering, sensible colors, avoid obvious artifacts), but **prioritize performance** and interaction smoothness.
+
+---
+
+## What must remain exact (candidate invariants)
+
+The candidate may change **how things are rendered**, but must preserve **what the system means**.
+
+### Required correctness properties
+
+- **Project/unproject** must match reference within tolerance.
+- **Pan/zoom** must be **anchor-invariant** (cursor anchor stays fixed under the drag/zoom semantics defined by the geometry).
+- **Hit-test** must match exactly (including deterministic tie-breaks).
+- **Lasso selection** must match exactly.
+
+Default tolerances enforced by the harness are documented in `src/benchmarks/README.md`.
+
+### Important nuance: render quality vs interaction semantics
+
+The existing WebGL candidate uses adaptive quality (LOD / lower offscreen DPR / squares vs circles) to keep interaction smooth at large $N$.
+
+This is OK **only if it affects rendering output**, not semantics:
+
+- hit-testing and lasso selection must remain exact (CPU-side) and match reference
+- project/unproject + view state updates must remain exact (delegated to `src/core/math/*`)
+
+---
+
+## “If you touch X, check Y” (practical checklist)
+
+- If you change camera/view math: run the **accuracy suite** immediately.
+- If you change hit-testing or lasso: run the **accuracy suite** and spot-check edge cases (ties, near-boundary points).
+- If you change GPU buffer upload strategy (subsampling, caps like `maxGpuUploadPoints`):
+  - confirm semantics still use the full dataset on CPU
+  - confirm selection/hover overlays don’t OOM for huge selections
+- If you modify rendering policy knobs: run the **performance benchmarks** on a few point counts and both geometries.

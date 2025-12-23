@@ -139,6 +139,15 @@
       top: 0;
       left: 0;
     }
+    /* Main renderer canvas */
+    #canvas {
+      z-index: 1;
+    }
+    /* UI overlay canvas (lasso, guides, etc.) */
+    #overlayCanvas {
+      pointer-events: none;
+      z-index: 2;
+    }
     .mode-indicator {
       position: absolute;
       top: 10px;
@@ -149,6 +158,7 @@
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+      z-index: 3;
     }
     .mode-indicator.pan { color: #6af; }
     .mode-indicator.lasso { color: #f6a; }
@@ -192,19 +202,33 @@
     <div class="sidebar">
       <h2>Dataset</h2>
       <div class="control-group">
+        <label>Renderer</label>
+        <select id="renderer">
+          <option value="webgl">WebGL (Fast)</option>
+          <option value="reference">Reference (Canvas2D)</option>
+        </select>
+      </div>
+      <div class="control-group">
         <label>Geometry</label>
         <select id="geometry">
           <option value="euclidean">Euclidean</option>
-          <option value="poincare">Hyperbolic (Poincare)</option>
+          <option value="poincare" selected>Hyperbolic (Poincare)</option>
         </select>
       </div>
       <div class="control-group">
         <label>Number of Points</label>
         <select id="numPoints">
           <option value="1000">1,000</option>
-          <option value="10000" selected>10,000</option>
+          <option value="10000">10,000</option>
           <option value="50000">50,000</option>
           <option value="100000">100,000</option>
+          <option value="250000">250,000</option>
+          <option value="500000">500,000</option>
+          <option value="1000000">1,000,000</option>
+          <option value="2000000">2,000,000</option>
+          <option value="5000000" selected>5,000,000</option>
+          <option value="10000000">10,000,000</option>
+          <option value="20000000">20,000,000</option>
         </select>
       </div>
       <div class="control-group">
@@ -256,9 +280,10 @@
 
     <div class="canvas-container">
       <div class="canvas-wrapper">
-        <div class="canvas-header">Reference Implementation (Canvas2D)</div>
+        <div class="canvas-header" id="canvasHeader">WebGL Renderer</div>
         <div class="canvas-body" id="canvasBody">
           <canvas id="canvas"></canvas>
+          <canvas id="overlayCanvas"></canvas>
           <div class="mode-indicator pan" id="modeIndicator">PAN</div>
         </div>
       </div>

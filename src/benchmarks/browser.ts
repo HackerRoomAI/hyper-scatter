@@ -1,11 +1,21 @@
 /**
  * Browser Benchmark Script
  *
- * Tests Canvas2D rendering and interaction performance.
- * Used by benchmark.html
+ * Benchmarks rendering + interaction performance in the browser.
+ *
+ * This harness supports two renderer modes:
+ * - `reference`: Canvas2D reference implementations (correctness baseline)
+ * - `webgl`: WebGL2 candidate implementations (performance path)
+ *
+ * IMPORTANT: a single <canvas> cannot hold both a 2D and WebGL context.
+ * Therefore we standardize on:
+ * - main canvas (#canvas): reserved for Canvas2D (reference)
+ * - hidden canvas (#candidateCanvas): reserved for WebGL (candidate)
+ *
+ * Used by benchmark.html and the CLI-driven puppeteer runners.
  *
  * ============================================================================
- * CANDIDATE INTEGRATION GUIDE
+ * CANDIDATE INTEGRATION GUIDE (updated)
  * ============================================================================
  *
  * To test your optimized renderer candidate against the reference:
@@ -27,8 +37,8 @@
  *
  * 4. Run `npm run bench:browser` and click "Run Accuracy Tests"
  *
- * 5. For performance comparison, modify `runSingleBenchmark()` to use
- *    your candidate instead of the reference.
+ * 5. For performance comparison, run the benchmark with `renderer: 'webgl'`
+ *    (default). To benchmark the reference baseline, use `renderer: 'reference'`.
  *
  * Expected tolerances:
  * - Projection: < 1e-6 pixels
@@ -43,6 +53,10 @@ import { GeometryMode, Renderer } from '../core/types.js';
 import { generateDataset } from '../core/dataset.js';
 import { EuclideanReference } from '../impl_reference/euclidean_reference.js';
 import { HyperbolicReference } from '../impl_reference/hyperbolic_reference.js';
+import {
+  EuclideanWebGLCandidate,
+  HyperbolicWebGLCandidate,
+} from '../impl_candidate/webgl_candidate.js';
 import {
   TimingStats,
   calculateStats,
@@ -65,6 +79,21 @@ export interface BenchmarkConfig {
   warmupFrames: number;
   measuredFrames: number;
   hitTestSamples: number;
+
+  /**
+   * Optional: override the lasso polygon radius as a fraction of min(width,height).
+   *
+   * This is benchmark-only (not used by accuracy tests). It exists so we can
+   * stress dense lasso selections at huge N without editing code each time.
+   * Example: 0.4 roughly matches the original large-lasso setting.
+   */
+  lassoRadiusScale?: number;
+
+  /**
+   * Which renderer implementation to benchmark.
+   * NOTE: One run should benchmark exactly one renderer mode.
+   */
+  renderer?: 'webgl' | 'reference';
 }
 
 export interface BenchmarkResult {
@@ -72,10 +101,22 @@ export interface BenchmarkResult {
   points: number;
   datasetGenMs: number;
   renderMs: TimingStats;
+  frameIntervalMs: TimingStats;  // Actual frame-to-frame time
   hitTestMs: TimingStats;
+  panMs?: TimingStats;
+  hoverMs?: TimingStats;
+  panFrameIntervalMs?: TimingStats;     // Frame interval while panning
+  hoverFrameIntervalMs?: TimingStats;   // Frame interval while hovering
   lassoMs: number;
   lassoSelectedCount: number;
   memoryMB?: number;
+
+  /** Optional: candidate renderer policy snapshot(s) for diagnostics. */
+  candidatePolicy?: {
+    steady?: any;
+    pan?: any;
+    hover?: any;
+  };
 }
 
 export interface BenchmarkReport {
@@ -103,7 +144,79 @@ export const DEFAULT_CONFIG: BenchmarkConfig = {
   warmupFrames: 5,
   measuredFrames: 20,
   hitTestSamples: 100,
+  renderer: 'webgl',
 };
+
+// Optional: large-N stress config for the updated 20M@60FPS scope.
+// Not used by default because it can be very memory- and time-intensive.
+export const STRESS_CONFIG: BenchmarkConfig = {
+  pointCounts: [1_000_000, 2_000_000, 5_000_000, 10_000_000, 20_000_000],
+  geometries: ['euclidean', 'poincare'],
+  warmupFrames: 5,
+  measuredFrames: 20,
+  hitTestSamples: 100,
+  renderer: 'webgl',
+};
+
+function getRendererMode(config: BenchmarkConfig): 'webgl' | 'reference' {
+  return config.renderer ?? 'webgl';
+}
+
+function getOrCreateCandidateCanvas(referenceCanvas: HTMLCanvasElement): HTMLCanvasElement {
+  let candidateCanvas = document.getElementById('candidateCanvas') as HTMLCanvasElement | null;
+  if (!candidateCanvas) {
+    candidateCanvas = document.createElement('canvas');
+    candidateCanvas.id = 'candidateCanvas';
+    candidateCanvas.style.display = 'none';
+    document.body.appendChild(candidateCanvas);
+  }
+
+  // Keep CSS sizing in sync with the reference canvas.
+  // (Even if the canvas is hidden, some code paths inspect style sizes.)
+  const rect = referenceCanvas.getBoundingClientRect();
+
+  // Prefer explicit styles if they exist (e.g. benchmark.html sets canvas.style.width).
+  if (referenceCanvas.style.width) candidateCanvas.style.width = referenceCanvas.style.width;
+  if (referenceCanvas.style.height) candidateCanvas.style.height = referenceCanvas.style.height;
+
+  // If the reference canvas is visible, trust its layout rect.
+  if (rect.width > 0 && rect.height > 0) {
+    candidateCanvas.style.width = `${rect.width}px`;
+    candidateCanvas.style.height = `${rect.height}px`;
+  } else {
+    // If the reference canvas is hidden (display:none), its rect is 0x0.
+    // Fall back to parent container sizing if available.
+    const parent = referenceCanvas.parentElement as HTMLElement | null;
+    if (parent) {
+      const pr = parent.getBoundingClientRect();
+      if (pr.width > 0 && pr.height > 0) {
+        // Note: this may include padding. In benchmark.html the JS sets an
+        // explicit width on the canvas, so this is primarily a safety net.
+        if (!candidateCanvas.style.width) candidateCanvas.style.width = `${pr.width}px`;
+        if (!candidateCanvas.style.height) candidateCanvas.style.height = `${pr.height}px`;
+      }
+    }
+  }
+
+  return candidateCanvas;
+}
+
+function setBenchmarkCanvasVisibility(
+  referenceCanvas: HTMLCanvasElement,
+  candidateCanvas: HTMLCanvasElement,
+  rendererMode: 'webgl' | 'reference'
+): void {
+  // For manual runs (benchmark.html), it is much nicer to *see* what you're
+  // benchmarking. Also, some browsers may treat a display:none WebGL canvas as
+  // “not presented”, which can skew rAF/frame pacing.
+  if (rendererMode === 'webgl') {
+    referenceCanvas.style.display = 'none';
+    candidateCanvas.style.display = 'block';
+  } else {
+    referenceCanvas.style.display = 'block';
+    candidateCanvas.style.display = 'none';
+  }
+}
 
 // ============================================================================
 // Benchmark Runner
@@ -119,8 +232,17 @@ async function runSingleBenchmark(
   config: BenchmarkConfig,
   onProgress?: ProgressCallback
 ): Promise<BenchmarkResult> {
-  const width = canvas.clientWidth;
-  const height = canvas.clientHeight;
+  const rendererMode = getRendererMode(config);
+
+  const candidateCanvas = getOrCreateCandidateCanvas(canvas);
+  setBenchmarkCanvasVisibility(canvas, candidateCanvas, rendererMode);
+
+  // Measure from the visible canvas (clientWidth/clientHeight are 0 for display:none).
+  const measureCanvas = rendererMode === 'webgl' ? candidateCanvas : canvas;
+  const width = measureCanvas.clientWidth;
+  const height = measureCanvas.clientHeight;
+
+  const renderCanvas = rendererMode === 'webgl' ? candidateCanvas : canvas;
 
   onProgress?.(`Generating ${pointCount.toLocaleString()} ${geometry} points...`, 0);
 
@@ -135,11 +257,11 @@ async function runSingleBenchmark(
   const datasetGenMs = performance.now() - datasetStart;
 
   // Create renderer
-  const renderer: Renderer = geometry === 'euclidean'
-    ? new EuclideanReference()
-    : new HyperbolicReference();
+  const renderer: Renderer = rendererMode === 'reference'
+    ? (geometry === 'euclidean' ? new EuclideanReference() : new HyperbolicReference())
+    : (geometry === 'euclidean' ? new EuclideanWebGLCandidate() : new HyperbolicWebGLCandidate());
 
-  renderer.init(canvas, {
+  renderer.init(renderCanvas, {
     width,
     height,
     devicePixelRatio: window.devicePixelRatio,
@@ -156,14 +278,139 @@ async function runSingleBenchmark(
 
   onProgress?.(`Measuring render performance...`, 0.3);
 
-  // Measured render frames
+  // Measured render frames - track both CPU submit time and actual frame intervals
   const renderTimes: number[] = [];
+  const frameIntervals: number[] = [];
+  let lastFrameTime = performance.now();
+
   for (let i = 0; i < config.measuredFrames; i++) {
     const start = performance.now();
     renderer.render();
     renderTimes.push(performance.now() - start);
+
     await nextFrame();
+
+    const now = performance.now();
+    if (i > 0) {  // Skip first interval (includes warmup latency)
+      frameIntervals.push(now - lastFrameTime);
+    }
+    lastFrameTime = now;
   }
+
+  const policySteady = rendererMode === 'webgl' ? (renderer as any).__debugPolicy : undefined;
+
+  // ------------------------------------------------------------------------
+  // Interactive benchmarks (demo-like)
+  // ------------------------------------------------------------------------
+  // These are the paths that often dominate perceived performance:
+  // - Panning: updates view state every frame.
+  // - Hovering: hitTest + setHovered + render every frame.
+  // The earlier benchmark measured render() only, which can look great even if
+  // interaction stutters.
+
+  onProgress?.(`Measuring pan performance...`, 0.45);
+
+  const panTimes: number[] = [];
+  const panIntervals: number[] = [];
+  let lastPanFrame = performance.now();
+
+  // Use more frames for interaction to better approximate real drag behavior
+  // and to ensure we actually reach the edges even when measuredFrames is small.
+  const panFrames = Math.max(config.measuredFrames, 60);
+
+  // Start pan gesture at canvas center if supported.
+  const startX = width / 2;
+  const startY = height / 2;
+  if ('startPan' in (renderer as any)) {
+    try {
+      (renderer as any).startPan(startX, startY);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Pan aggressively towards the edges (like a real user dragging around).
+  // We construct absolute cursor targets and convert to deltas so the
+  // hyperbolic renderer's anchor-invariant pan behaves correctly.
+  const centerX = width / 2;
+  const centerY = height / 2;
+
+  // For poincare, target near the disk boundary; for euclidean, target near
+  // the canvas edge.
+  const diskRadius = Math.min(width, height) * 0.45;
+  const amp = geometry === 'poincare'
+    ? diskRadius * 0.92
+    : Math.min(width, height) * 0.45;
+
+  const keypoints: Array<{ x: number; y: number }> = [
+    { x: centerX, y: centerY },
+    { x: centerX + amp, y: centerY },
+    { x: centerX - amp, y: centerY },
+    { x: centerX, y: centerY - amp },
+    { x: centerX, y: centerY + amp },
+    { x: centerX, y: centerY },
+  ];
+
+  let curX = startX;
+  let curY = startY;
+
+  for (let i = 0; i < panFrames; i++) {
+    const t = i / Math.max(1, panFrames - 1);
+    const segs = keypoints.length - 1;
+    const sFloat = t * segs;
+    const s = Math.min(segs - 1, Math.floor(sFloat));
+    const u = sFloat - s;
+
+    const a = keypoints[s];
+    const b = keypoints[s + 1];
+    const targetX = a.x + (b.x - a.x) * u;
+    const targetY = a.y + (b.y - a.y) * u;
+
+    const dx = targetX - curX;
+    const dy = targetY - curY;
+    curX = targetX;
+    curY = targetY;
+
+    const p0 = performance.now();
+    renderer.pan(dx, dy, { shift: false, ctrl: false, alt: false, meta: false });
+    panTimes.push(performance.now() - p0);
+
+    renderer.render();
+    await nextFrame();
+
+    const now = performance.now();
+    if (i > 0) panIntervals.push(now - lastPanFrame);
+    lastPanFrame = now;
+  }
+
+  const policyPan = rendererMode === 'webgl' ? (renderer as any).__debugPolicy : undefined;
+
+  onProgress?.(`Measuring hover performance...`, 0.55);
+
+  const hoverTimes: number[] = [];
+  const hoverIntervals: number[] = [];
+  let lastHoverFrame = performance.now();
+
+  // Move cursor over a circular path and run hitTest + setHovered each frame.
+  for (let i = 0; i < config.measuredFrames; i++) {
+    const t = i / Math.max(1, config.measuredFrames - 1);
+    const x = width / 2 + Math.cos(t * Math.PI * 2) * (Math.min(width, height) * 0.25);
+    const y = height / 2 + Math.sin(t * Math.PI * 2) * (Math.min(width, height) * 0.25);
+
+    const h0 = performance.now();
+    const hit = renderer.hitTest(x, y);
+    renderer.setHovered(hit ? hit.index : -1);
+    hoverTimes.push(performance.now() - h0);
+
+    renderer.render();
+    await nextFrame();
+
+    const now = performance.now();
+    if (i > 0) hoverIntervals.push(now - lastHoverFrame);
+    lastHoverFrame = now;
+  }
+
+  const policyHover = rendererMode === 'webgl' ? (renderer as any).__debugPolicy : undefined;
 
   onProgress?.(`Measuring hit test performance...`, 0.6);
 
@@ -180,7 +427,19 @@ async function runSingleBenchmark(
   onProgress?.(`Measuring lasso selection...`, 0.8);
 
   // Lasso selection benchmark
-  const lassoPolygon = generateTestPolygon(width / 2, height / 2, Math.min(width, height) * 0.4);
+  // NOTE: At very large N, a large lasso can select millions of points, causing
+  // massive allocations and multi-minute main-thread stalls. For the perf
+  // benchmark we keep the lasso region small enough to stay tractable, while
+  // still exercising the selection pipeline.
+  const overrideScale = config.lassoRadiusScale;
+  const lassoRadius = (typeof overrideScale === 'number' && Number.isFinite(overrideScale) && overrideScale > 0)
+    ? Math.min(width, height) * overrideScale
+    : pointCount >= 10_000_000
+      ? Math.min(width, height) * 0.08
+      : pointCount >= 1_000_000
+        ? Math.min(width, height) * 0.15
+        : Math.min(width, height) * 0.4;
+  const lassoPolygon = generateTestPolygon(width / 2, height / 2, lassoRadius);
   const lassoResult = renderer.lassoSelect(lassoPolygon);
 
   // Memory usage (Chrome only)
@@ -200,10 +459,23 @@ async function runSingleBenchmark(
     points: pointCount,
     datasetGenMs,
     renderMs: calculateStats(renderTimes),
+    frameIntervalMs: calculateStats(frameIntervals.length > 0 ? frameIntervals : [16.67]),
     hitTestMs: calculateStats(hitTestTimes),
+    panMs: calculateStats(panTimes),
+    hoverMs: calculateStats(hoverTimes),
+    panFrameIntervalMs: calculateStats(panIntervals.length > 0 ? panIntervals : [16.67]),
+    hoverFrameIntervalMs: calculateStats(hoverIntervals.length > 0 ? hoverIntervals : [16.67]),
     lassoMs: lassoResult.computeTimeMs,
     lassoSelectedCount: lassoResult.indices.size,
     memoryMB,
+
+    candidatePolicy: rendererMode === 'webgl'
+      ? {
+          steady: policySteady,
+          pan: policyPan,
+          hover: policyHover,
+        }
+      : undefined,
   };
 }
 
@@ -218,6 +490,13 @@ export async function runBenchmarks(
   const results: BenchmarkResult[] = [];
   const totalTests = config.pointCounts.length * config.geometries.length;
   let completedTests = 0;
+
+  // Ensure the correct canvas is visible for the duration of this run.
+  // (If we hide the passed `canvas` in WebGL mode, `canvas.clientWidth` becomes
+  // 0, so any size reporting must use the visible canvas instead.)
+  const rendererMode = getRendererMode(config);
+  const candidateCanvas = getOrCreateCandidateCanvas(canvas);
+  setBenchmarkCanvasVisibility(canvas, candidateCanvas, rendererMode);
 
   for (const geometry of config.geometries) {
     for (const pointCount of config.pointCounts) {
@@ -255,8 +534,8 @@ export async function runBenchmarks(
     system: {
       userAgent: navigator.userAgent,
       devicePixelRatio: window.devicePixelRatio,
-      canvasWidth: canvas.clientWidth,
-      canvasHeight: canvas.clientHeight,
+      canvasWidth: (rendererMode === 'webgl' ? candidateCanvas : canvas).clientWidth,
+      canvasHeight: (rendererMode === 'webgl' ? candidateCanvas : canvas).clientHeight,
     },
     config,
     results,
@@ -265,6 +544,9 @@ export async function runBenchmarks(
 
 /**
  * Run accuracy tests comparing reference implementations.
+ *
+ * IMPORTANT: Uses separate canvases for reference (Canvas2D) and candidate (WebGL)
+ * because a single canvas cannot have both 2D and WebGL contexts simultaneously.
  *
  * CANDIDATE INTEGRATION: To test your optimized renderer, replace
  * `candidateRenderer` below with your implementation:
@@ -285,6 +567,9 @@ export async function runAccuracyBenchmarks(
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
 
+  // Get or create separate canvas for candidate (WebGL needs its own canvas)
+  const candidateCanvas = getOrCreateCandidateCanvas(canvas);
+
   for (const geometry of ['euclidean', 'poincare'] as const) {
     onProgress?.(`Running ${geometry} accuracy tests...`, geometry === 'euclidean' ? 0 : 0.5);
 
@@ -295,19 +580,19 @@ export async function runAccuracyBenchmarks(
       geometry,
     });
 
-    // Reference implementation (ground truth)
+    // Reference implementation (ground truth) - uses Canvas2D on main canvas
     const refRenderer: Renderer = geometry === 'euclidean'
       ? new EuclideanReference()
       : new HyperbolicReference();
 
-    // Candidate implementation (change this to test your optimized renderer)
-    // Currently comparing reference against itself to validate test infrastructure
+    // Candidate implementation - uses WebGL on separate canvas
     const candidateRenderer: Renderer = geometry === 'euclidean'
-      ? new EuclideanReference()
-      : new HyperbolicReference();
+      ? new EuclideanWebGLCandidate()
+      : new HyperbolicWebGLCandidate();
 
+    // Initialize on SEPARATE canvases to avoid context conflicts
     refRenderer.init(canvas, { width, height, devicePixelRatio: window.devicePixelRatio });
-    candidateRenderer.init(canvas, { width, height, devicePixelRatio: window.devicePixelRatio });
+    candidateRenderer.init(candidateCanvas, { width, height, devicePixelRatio: window.devicePixelRatio });
 
     const report = runAccuracyTests(
       refRenderer,
@@ -336,30 +621,39 @@ export async function runAccuracyBenchmarks(
 export function formatResultsTable(report: BenchmarkReport): string {
   const lines: string[] = [
     '',
-    '═'.repeat(100),
+    '═'.repeat(110),
     'BENCHMARK RESULTS',
-    '═'.repeat(100),
+    '═'.repeat(110),
     `Timestamp: ${report.timestamp}`,
     `Canvas: ${report.system.canvasWidth}x${report.system.canvasHeight} @ ${report.system.devicePixelRatio}x DPR`,
-    '─'.repeat(100),
-    'Geometry   | Points     | Dataset  | Render (avg) | Render (min) | Hit Test   | Lasso      | Memory',
-    '─'.repeat(100),
+    '─'.repeat(110),
+    'Geometry   | Points     | Dataset  | CPU Submit   | Frame Int.   | Actual FPS | Pan FPS    | Hover FPS  | Hit Test   | Lasso      | Memory',
+    '─'.repeat(110),
   ];
 
   for (const r of report.results) {
     const geo = r.geometry.padEnd(10);
     const pts = r.points.toLocaleString().padStart(10);
     const dgen = `${r.datasetGenMs.toFixed(1)}ms`.padStart(8);
-    const ravg = `${r.renderMs.avg.toFixed(2)}ms`.padStart(12);
-    const rmin = `${r.renderMs.min.toFixed(2)}ms`.padStart(12);
+    const cpuAvg = `${r.renderMs.avg.toFixed(2)}ms`.padStart(12);
+    const frameInt = `${r.frameIntervalMs.avg.toFixed(2)}ms`.padStart(12);
+    const fps = `${(1000 / r.frameIntervalMs.avg).toFixed(1)}`.padStart(10);
+
+    const panFps = r.panFrameIntervalMs
+      ? `${(1000 / r.panFrameIntervalMs.avg).toFixed(1)}`.padStart(10)
+      : 'N/A'.padStart(10);
+    const hoverFps = r.hoverFrameIntervalMs
+      ? `${(1000 / r.hoverFrameIntervalMs.avg).toFixed(1)}`.padStart(10)
+      : 'N/A'.padStart(10);
+
     const ht = `${r.hitTestMs.avg.toFixed(3)}ms`.padStart(10);
     const lasso = `${r.lassoMs.toFixed(2)}ms`.padStart(10);
     const mem = r.memoryMB ? `${r.memoryMB.toFixed(0)}MB`.padStart(7) : 'N/A'.padStart(7);
 
-    lines.push(`${geo} | ${pts} | ${dgen} | ${ravg} | ${rmin} | ${ht} | ${lasso} | ${mem}`);
+    lines.push(`${geo} | ${pts} | ${dgen} | ${cpuAvg} | ${frameInt} | ${fps} | ${panFps} | ${hoverFps} | ${ht} | ${lasso} | ${mem}`);
   }
 
-  lines.push('═'.repeat(100));
+  lines.push('═'.repeat(110));
   lines.push('');
 
   return lines.join('\n');
@@ -376,9 +670,11 @@ export function formatResultsHTML(report: BenchmarkReport): string {
           <th>Geometry</th>
           <th>Points</th>
           <th>Dataset Gen</th>
-          <th>Render (avg)</th>
-          <th>Render (min)</th>
-          <th>FPS</th>
+          <th>CPU Submit (avg)</th>
+          <th>Frame Interval</th>
+          <th>Actual FPS</th>
+          <th>Pan FPS</th>
+          <th>Hover FPS</th>
           <th>Hit Test</th>
           <th>Lasso</th>
           <th>Memory</th>
@@ -388,8 +684,12 @@ export function formatResultsHTML(report: BenchmarkReport): string {
   `;
 
   for (const r of report.results) {
-    const fps = (1000 / r.renderMs.avg).toFixed(1);
-    const fpsClass = parseFloat(fps) >= 30 ? 'good' : parseFloat(fps) >= 10 ? 'warning' : 'bad';
+    // Use frame interval for actual FPS (more accurate for GPU rendering)
+    const actualFps = (1000 / r.frameIntervalMs.avg).toFixed(1);
+    const fpsClass = parseFloat(actualFps) >= 55 ? 'good' : parseFloat(actualFps) >= 30 ? 'warning' : 'bad';
+
+    const panFps = r.panFrameIntervalMs ? (1000 / r.panFrameIntervalMs.avg).toFixed(1) : 'N/A';
+    const hoverFps = r.hoverFrameIntervalMs ? (1000 / r.hoverFrameIntervalMs.avg).toFixed(1) : 'N/A';
 
     html += `
       <tr>
@@ -397,8 +697,10 @@ export function formatResultsHTML(report: BenchmarkReport): string {
         <td>${r.points.toLocaleString()}</td>
         <td>${r.datasetGenMs.toFixed(1)}ms</td>
         <td>${r.renderMs.avg.toFixed(2)}ms</td>
-        <td>${r.renderMs.min.toFixed(2)}ms</td>
-        <td class="${fpsClass}">${fps}</td>
+        <td>${r.frameIntervalMs.avg.toFixed(2)}ms</td>
+        <td class="${fpsClass}">${actualFps}</td>
+        <td>${panFps}</td>
+        <td>${hoverFps}</td>
         <td>${r.hitTestMs.avg.toFixed(3)}ms</td>
         <td>${r.lassoMs.toFixed(2)}ms</td>
         <td>${r.memoryMB ? r.memoryMB.toFixed(0) + 'MB' : 'N/A'}</td>
@@ -426,5 +728,6 @@ if (typeof window !== 'undefined') {
     formatResultsTable,
     formatResultsHTML,
     DEFAULT_CONFIG,
+    STRESS_CONFIG,
   };
 }
