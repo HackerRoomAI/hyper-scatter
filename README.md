@@ -106,6 +106,57 @@ npm run bench:accuracy
 npm run bench
 ```
 
+## Using in HyperView (integration notes)
+
+HyperView's frontend currently uses `regl-scatterplot` for its embeddings view. This repo's WebGL candidate renderers are designed to drop into that role, but there are a few integration-specific considerations.
+
+### 1) Build the reusable library output
+
+This repo now ships a small library entrypoint at `src/index.ts` and a build script that emits ESM + `.d.ts` to `dist-lib/`:
+
+```bash
+npm run build:lib
+```
+
+### 2) Install into HyperView's Next.js frontend
+
+From `HyperView/frontend/` (the Next.js app), install this folder as a local dependency:
+
+```bash
+npm install ../viz_impl
+```
+
+Then you can import from the package name (`viz-lab`) rather than deep-importing internal paths.
+
+### 3) Key integration differences vs `regl-scatterplot`
+
+- **Hyperbolic backdrop:** `HyperbolicWebGLCandidate` renders the Poincaré disk boundary + grid **inside WebGL**.
+  - Any DOM/SVG overlay that assumes an affine view transform will not stay aligned under Möbius transforms.
+  - In HyperView, you should remove/disable the current SVG disk overlay when switching to the hyperbolic renderer.
+
+- **Hyperbolic styling is configurable:** pass `backgroundColor`, `poincareDiskFillColor`, `poincareDiskBorderColor`, `poincareGridColor` in `InitOptions` to match your app theme.
+
+- **Palette supports arbitrary label counts:** the candidate uses a small RGBA8 palette texture (no 16-uniform limit).
+
+- **Large-N lasso selection can return geometry:** by default (`lassoSelectionMode: 'auto'`), `lassoSelect()` may return `{ kind: 'geometry' }` for large datasets to avoid enumerating huge index sets.
+  - If HyperView needs concrete selected IDs, initialize with `lassoSelectionMode: 'indices'` (or set `lassoGeometryThreshold` higher).
+
+### 4) Interaction wiring
+
+The renderer contract (`src/core/types.ts`) is intentionally low-level (pan/zoom/hit/lasso), and the lab wires mouse/keyboard input in `src/ui/app.ts`.
+
+For HyperView integration, you will want a small controller layer that:
+
+- attaches pointer + wheel events to the canvas
+- calls `renderer.pan(...)` / `renderer.zoom(...)`
+- uses `renderer.hitTest(...)` for hover updates
+- uses `renderer.lassoSelect(...)` for Shift+drag selection
+- schedules `renderer.render()` at most once per animation frame
+
+This keeps the renderer reusable across Next/React and avoids coupling it to the benchmark harness.
+
+If you want a ready-made controller, the library exports `createInteractionController(canvas, renderer, opts)` which wires pointer + wheel events and schedules `renderer.render()` via rAF.
+
 ## Benchmark Commands
 
 ### Accuracy Tests
@@ -145,22 +196,24 @@ npm run bench -- --renderer=reference
 | Technique | Purpose |
 |-----------|---------|
 | **WebGL2 point sprites** | GPU-accelerated rendering, 1 draw call for all points |
-| **Uniform grid spatial index** | O(1) average hit-test and lasso queries |
+| **Uniform grid spatial index** | O(1) average hit-test queries |
 | **Adaptive DPR** | Lower offscreen resolution during interaction |
 | **Geometry-based selection** | Return polygon + `has()` predicate instead of enumerating millions of indices |
 | **Selection overlay cap** | Render at most 50k highlighted points to avoid GPU buffer blowup |
 
 ### Lasso Selection Strategy
 
-For small datasets (< 200k points): Return `Set<number>` of selected indices.
+The WebGL candidate uses a uniform, geometry-first selection approach:
 
-For large datasets: Return the selection polygon in data space with a `has(index)` method. The harness verifies correctness by calling `has()` for every point—no need to materialize huge index sets.
+- Return the selection polygon in **data space** with optional AABB bounds.
+- Provide `has(index)` for deterministic membership checks (used by the harness).
+- Do not require enumerating huge index sets in the browser.
 
 ```typescript
 interface SelectionResult {
   kind: 'indices' | 'geometry';
-  indices?: Set<number>;           // For small N
-  geometry?: SelectionGeometry;    // For large N
+  indices?: Set<number>;           // Optional (not required for geometry-first workflows)
+  geometry?: SelectionGeometry;    // Polygon coords (+ optional bounds)
   has(index: number): boolean;     // Always available
   computeTimeMs: number;
 }

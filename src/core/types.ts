@@ -69,6 +69,14 @@ export interface HitResult {
   distance: number;
 }
 
+/** Axis-aligned bounds in 2D data coordinates. */
+export interface Bounds2D {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+}
+
 /**
  * Geometry-based selection shape in data coordinates.
  * Allows implementations to defer index enumeration.
@@ -77,6 +85,8 @@ export interface SelectionGeometry {
   type: 'polygon';
   /** Polygon vertices in data coordinates: [x0, y0, x1, y1, ...] */
   coords: Float32Array;
+  /** Optional AABB bounds of coords for fast prefiltering (same coordinate space as coords). */
+  bounds?: Bounds2D;
 }
 
 /**
@@ -121,6 +131,14 @@ export interface InitOptions {
   backgroundColor?: string;
   pointRadius?: number;
   colors?: string[];
+
+  /** Optional styling overrides for the hyperbolic (Poincaré) disk backdrop. */
+  poincareDiskFillColor?: string;
+  poincareDiskBorderColor?: string;
+  poincareGridColor?: string;
+  poincareDiskBorderWidthPx?: number;
+  poincareGridWidthPx?: number;
+
 }
 
 export interface Renderer {
@@ -168,11 +186,38 @@ export interface Renderer {
   /** Lasso selection with screen-space polyline */
   lassoSelect(polyline: Float32Array): SelectionResult;
 
+  /**
+   * Count the number of points selected by a SelectionResult.
+   *
+   * Motivation: geometry-based (predicate) selections are fast to create, but
+   * naively counting them by scanning all N points in the UI is too slow.
+   * Implementations should use any available spatial index / backend to count
+   * efficiently.
+   */
+  countSelection(result: SelectionResult, opts?: CountSelectionOptions): Promise<number>;
+
   /** Project a data point to screen coordinates */
   projectToScreen(dataX: number, dataY: number): { x: number; y: number };
 
   /** Unproject screen coordinates to data space */
   unprojectFromScreen(screenX: number, screenY: number): { x: number; y: number };
+}
+
+export interface CountSelectionOptions {
+  /** Optional cancellation predicate (return true to abort early). */
+  shouldCancel?: () => boolean;
+
+  /** Optional progress callback for long-running counts. */
+  onProgress?: (selectedCount: number, processedCandidates: number) => void;
+
+  /**
+   * Time slice budget (ms). If > 0, counting yields back to the browser after
+   * roughly this amount of work to keep the UI responsive.
+   *
+   * Set to 0 to run synchronously without yielding (useful for benchmarks).
+   * Default: 8ms.
+   */
+  yieldEveryMs?: number;
 }
 
 // ============================================================================

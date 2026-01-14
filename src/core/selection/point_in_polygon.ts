@@ -3,9 +3,17 @@
  * This is the naive, accurate implementation for reference.
  */
 
+import type { Bounds2D } from '../types.js';
+
 /**
  * Test if a point is inside a polygon using ray casting.
  * Polygon is given as interleaved x,y coordinates.
+ *
+ * Polygon semantics:
+ * - The polygon is implicitly CLOSED (edge from last vertex to first).
+ * - Vertex order may be CW or CCW (even-odd rule; winding does not matter).
+ * - Boundary rule: points exactly on an edge are considered INSIDE (within tolerance).
+ * - Ray crossing uses a half-open y-interval ((yi > py) !== (yj > py)) to avoid double counts.
  *
  * Boundary rule: points exactly on the edge are considered INSIDE.
  */
@@ -40,6 +48,33 @@ export function pointInPolygon(
   }
 
   return inside;
+}
+
+/**
+ * Compute an axis-aligned bounding box (AABB) for an interleaved polygon.
+ *
+ * Returns a finite bounds object. For empty input, returns all zeros.
+ */
+export function boundsOfPolygon(polygon: Float32Array): Bounds2D {
+  let xMin = Infinity;
+  let yMin = Infinity;
+  let xMax = -Infinity;
+  let yMax = -Infinity;
+
+  for (let i = 0; i < polygon.length; i += 2) {
+    const x = polygon[i];
+    const y = polygon[i + 1];
+    if (x < xMin) xMin = x;
+    if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y;
+    if (y > yMax) yMax = y;
+  }
+
+  if (!Number.isFinite(xMin) || !Number.isFinite(yMin) || !Number.isFinite(xMax) || !Number.isFinite(yMax)) {
+    return { xMin: 0, yMin: 0, xMax: 0, yMax: 0 };
+  }
+
+  return { xMin, yMin, xMax, yMax };
 }
 
 /**

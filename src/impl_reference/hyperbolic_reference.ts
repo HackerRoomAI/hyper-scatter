@@ -20,6 +20,7 @@ import {
   Modifiers,
   HitResult,
   SelectionResult,
+  CountSelectionOptions,
   DEFAULT_COLORS,
   SELECTION_COLOR,
   HOVER_COLOR,
@@ -59,7 +60,7 @@ export class HyperbolicReference implements Renderer {
 
     this.width = opts.width;
     this.height = opts.height;
-    this.dpr = opts.devicePixelRatio ?? window.devicePixelRatio ?? 1;
+    this.dpr = opts.devicePixelRatio ?? 1;
 
     if (opts.backgroundColor) this.backgroundColor = opts.backgroundColor;
     if (opts.pointRadius) this.pointRadius = opts.pointRadius;
@@ -368,6 +369,13 @@ export class HyperbolicReference implements Renderer {
 
     const computeTimeMs = performance.now() - startTime;
     return createIndicesSelectionResult(indices, computeTimeMs);
+  }
+
+  async countSelection(result: SelectionResult, _opts: CountSelectionOptions = {}): Promise<number> {
+    if (!result.indices) {
+      throw new Error('HyperbolicReference.countSelection expects indices-based selections');
+    }
+    return result.indices.size;
   }
 
   projectToScreen(dataX: number, dataY: number): { x: number; y: number } {

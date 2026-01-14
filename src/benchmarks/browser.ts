@@ -434,7 +434,10 @@ async function runSingleBenchmark(
     ? Math.min(width, height) * overrideScale
     : Math.min(width, height) * 0.4;
   const lassoPolygon = generateTestPolygon(width / 2, height / 2, lassoRadius);
+  const lassoStart = performance.now();
   const lassoResult = renderer.lassoSelect(lassoPolygon);
+  const lassoSelectedCount = await renderer.countSelection(lassoResult, { yieldEveryMs: 0 });
+  const lassoMs = performance.now() - lassoStart;
 
   // Memory usage (Chrome only)
   let memoryMB: number | undefined;
@@ -459,10 +462,8 @@ async function runSingleBenchmark(
     hoverMs: calculateStats(hoverTimes),
     panFrameIntervalMs: calculateStats(panIntervals.length > 0 ? panIntervals : [16.67]),
     hoverFrameIntervalMs: calculateStats(hoverIntervals.length > 0 ? hoverIntervals : [16.67]),
-    lassoMs: lassoResult.computeTimeMs,
-    // For indices-based selections, report the count directly.
-    // For geometry-based selections, this would require iterating all points.
-    lassoSelectedCount: lassoResult.indices?.size ?? -1,
+    lassoMs,
+    lassoSelectedCount,
     memoryMB,
 
     candidatePolicy: rendererMode === 'webgl'

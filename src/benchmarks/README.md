@@ -164,6 +164,10 @@ The benchmark harness is intentionally implementation-agnostic:
 - **Contract-based verification**: Accuracy is verified via the `has()` method, not by
   comparing internal data structures. This allows implementations to use indices, bitsets,
   geometry predicates, or GPU-based solutions.
+- **End-to-end lasso timing**: The browser performance benchmark reports lasso time including
+  the work required to obtain an exact selected-count (i.e., it materializes counts for
+  geometry/predicate selections). This avoids misleadingly low lasso times when expensive
+  membership work is deferred.
 - **No implementation hints**: The harness does not adapt its behavior based on point count
   or suggest specific optimization strategies.
 

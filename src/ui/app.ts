@@ -8,7 +8,7 @@ import { generateDataset } from '../core/dataset.js';
 import { EuclideanReference } from '../impl_reference/euclidean_reference.js';
 import { HyperbolicReference } from '../impl_reference/hyperbolic_reference.js';
 import { EuclideanWebGLCandidate, HyperbolicWebGLCandidate } from '../impl_candidate/webgl_candidate.js';
-import { simplifyPolygonData } from './lasso_simplify.js';
+import { simplifyPolygonData } from '../core/lasso_simplify.js';
 
 type RendererType = 'webgl' | 'reference';
 
@@ -90,33 +90,20 @@ let selectionJobId = 0;
 async function countSelectionAsync(
   jobId: number,
   result: SelectionResult,
-  ds: Dataset,
 ): Promise<void> {
-  // Count selected points for predicate-style results (range selection).
-  // We keep UI responsive by chunking and yielding to rAF.
-  let totalCount = 0;
-  const chunk = 50_000;
-  let i = 0;
+  if (!renderer) return;
 
-  while (i < ds.n) {
-    const end = Math.min(ds.n, i + chunk);
-    for (; i < end; i++) {
-      if (result.has(i)) {
-        totalCount++;
-      }
-    }
-
-    if (jobId !== selectionJobId) return; // cancelled
-
-    // Yield so UI stays responsive.
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-
-    const suffix = i < ds.n ? ' (computing…)' : '';
-    statSelected.textContent = `${totalCount.toLocaleString()}${suffix}`;
-  }
+  const total = await renderer.countSelection(result, {
+    shouldCancel: () => jobId !== selectionJobId,
+    onProgress: (selectedCount) => {
+      if (jobId !== selectionJobId) return;
+      statSelected.textContent = `${selectedCount.toLocaleString()} (computing…)`;
+    },
+    yieldEveryMs: 8,
+  });
 
   if (jobId !== selectionJobId) return;
-  statSelected.textContent = totalCount.toLocaleString();
+  statSelected.textContent = total.toLocaleString();
 }
 
 // Frame scheduling + throttling
@@ -578,25 +565,12 @@ function handleMouseUp(_e: MouseEvent): void {
     // Persist the range selection overlay in DATA SPACE (so it tracks pan/zoom).
     rangeSelectionDataPolygon = dataPoly;
 
-    // Apply selection (Embedding Atlas style):
-    // - For small selections (explicit indices), highlight selected points.
-    // - For large-N predicate selections (geometry), do NOT try to highlight
-    //   all points (the renderer caps the overlay and it looks like "missing"
-    //   points near the edges). Keep only the range-selection overlay and show
-    //   an accurate count.
-    if (result.indices) {
-      renderer.setSelection(result.indices);
-      statSelected.textContent = result.indices.size.toLocaleString();
-    } else if (result.kind === 'geometry' && dataset) {
-      // Clear any prior point-highlight selection.
-      renderer.setSelection(new Set());
-
-      statSelected.textContent = '…';
-      const jobId = ++selectionJobId;
-      void countSelectionAsync(jobId, result, dataset);
-    } else {
-      statSelected.textContent = '0';
-    }
+    // Apply selection (Embedding Atlas style): keep only the range-selection
+    // overlay (no point highlighting) and compute an exact count asynchronously.
+    renderer.setSelection(new Set());
+    statSelected.textContent = '…';
+    const jobId = ++selectionJobId;
+    void countSelectionAsync(jobId, result);
     statLassoTime.textContent = `${result.computeTimeMs.toFixed(2)}ms`;
   }
 

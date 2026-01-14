@@ -1,11 +1,29 @@
 {
-  "name": "viz-lab",
+  "name": "hyper-scatter",
   "version": "0.1.0",
-  "description": "Embedding visualizer lab - correctness + performance testbed",
+  "description": "High-performance scatter plot renderer for Euclidean and hyperbolic embeddings",
   "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist-lib/index.d.ts",
+      "import": "./dist-lib/index.js"
+    }
+  },
+  "main": "./dist-lib/index.js",
+  "module": "./dist-lib/index.js",
+  "types": "./dist-lib/index.d.ts",
+  "files": [
+    "dist-lib",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:lib": "tsc -p tsconfig.lib.json",
+    "prepack": "npm run build:lib",
+    "pack:lib": "npm run build:lib && npm pack",
     "preview": "vite preview",
     "bench": "npx tsx src/benchmarks/run-browser-bench.ts",
     "bench:headless": "npx tsx src/benchmarks/run-browser-bench.ts --headless",

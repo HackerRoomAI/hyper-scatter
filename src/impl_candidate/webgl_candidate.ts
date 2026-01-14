@@ -51,6 +51,7 @@ import {
   HitResult,
   SelectionResult,
   SelectionGeometry,
+  CountSelectionOptions,
   DEFAULT_COLORS,
   SELECTION_COLOR,
   HOVER_COLOR,
@@ -76,7 +77,6 @@ import {
 
 import {
   UniformGridIndex,
-  lassoSelectIndexed,
 } from './spatial_index.js';
 
 import { pointInPolygon } from '../core/selection/point_in_polygon.js';
@@ -106,6 +106,29 @@ function parseHexColor(color: string): [number, number, number, number] {
   }
 
   return [1, 1, 1, 1];
+}
+
+function parseHexColorBytes(color: string): [number, number, number, number] {
+  // Accept: #rgb, #rrggbb, #rrggbbaa
+  const s = color.trim();
+  if (!s.startsWith('#')) return [255, 255, 255, 255];
+
+  const hex = s.slice(1);
+  if (hex.length === 3) {
+    const r = parseInt(hex[0] + hex[0], 16);
+    const g = parseInt(hex[1] + hex[1], 16);
+    const b = parseInt(hex[2] + hex[2], 16);
+    return [r, g, b, 255];
+  }
+  if (hex.length === 6 || hex.length === 8) {
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const a = hex.length === 8 ? parseInt(hex.slice(6, 8), 16) : 255;
+    return [r, g, b, a];
+  }
+
+  return [255, 255, 255, 255];
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -150,8 +173,8 @@ function setCanvasSize(canvas: HTMLCanvasElement, width: number, height: number,
   canvas.style.height = `${height}px`;
 }
 
-// Note: Palette upload is handled by WebGLRendererBase via a cached Float32Array
-// to avoid per-frame allocations.
+// Note: Palette upload is handled by WebGLRendererBase via a small palette
+// texture (supports arbitrary label counts) and cached upload buffers.
 
 // ============================================================================
 // Shader sources
@@ -167,8 +190,9 @@ flat in uint v_label;
 uniform float u_dpr;
 uniform float u_pointRadiusCss;
 
-uniform vec4 u_palette[16];
+uniform sampler2D u_paletteTex;
 uniform int u_paletteSize;
+uniform int u_paletteWidth;
 
 out vec4 outColor;
 
@@ -186,8 +210,12 @@ void main() {
   float alpha = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
   if (alpha <= 0.0) discard;
 
-  int idx = int(v_label) % max(u_paletteSize, 1);
-  vec4 c = u_palette[idx];
+  int size = max(u_paletteSize, 1);
+  int w = max(u_paletteWidth, 1);
+  int idx = int(v_label) % size;
+  int x = idx % w;
+  int y = idx / w;
+  vec4 c = texelFetch(u_paletteTex, ivec2(x, y), 0);
   outColor = vec4(c.rgb, c.a * alpha);
 }
 `;
@@ -200,14 +228,19 @@ precision highp int;
 
 flat in uint v_label;
 
-uniform vec4 u_palette[16];
+uniform sampler2D u_paletteTex;
 uniform int u_paletteSize;
+uniform int u_paletteWidth;
 
 out vec4 outColor;
 
 void main() {
-  int idx = int(v_label) % max(u_paletteSize, 1);
-  outColor = u_palette[idx];
+  int size = max(u_paletteSize, 1);
+  int w = max(u_paletteWidth, 1);
+  int idx = int(v_label) % size;
+  int x = idx % w;
+  int y = idx / w;
+  outColor = texelFetch(u_paletteTex, ivec2(x, y), 0);
 }
 `;
 
@@ -298,6 +331,12 @@ uniform vec2 u_cssSize;
 uniform float u_dpr;
 uniform float u_displayZoom;
 
+uniform vec4 u_diskFillColor;
+uniform vec4 u_diskBorderColor;
+uniform vec4 u_gridColor;
+uniform float u_diskBorderWidthPx;
+uniform float u_gridWidthPx;
+
 out vec4 outColor;
 
 void main() {
@@ -310,10 +349,10 @@ void main() {
   float dist = length(p);
 
   // Reference-like styling
-  vec3 diskFill = vec3(37.0 / 255.0, 37.0 / 255.0, 66.0 / 255.0);   // #252542
-  vec3 diskBorder = vec3(74.0 / 255.0, 74.0 / 255.0, 106.0 / 255.0); // #4a4a6a
+  vec3 diskFill = u_diskFillColor.rgb;
+  vec3 diskBorder = u_diskBorderColor.rgb;
 
-  float borderWidth = 2.0; // CSS px
+  float borderWidth = max(u_diskBorderWidthPx, 0.0);
   float halfW = 0.5 * borderWidth;
 
   // Anti-aliasing width (CSS px). Keep at least 1px for crisp edges.
@@ -338,8 +377,8 @@ void main() {
   // Matches HyperbolicReference.drawHyperbolicGrid():
   // - 8 radial lines (geodesics through origin)
   // - 5 concentric circles
-  vec3 gridCol = vec3(58.0 / 255.0, 58.0 / 255.0, 90.0 / 255.0); // #3a3a5a
-  float gridWidth = 0.5; // CSS px
+  vec3 gridCol = u_gridColor.rgb;
+  float gridWidth = max(u_gridWidthPx, 0.0);
   float halfGrid = 0.5 * gridWidth;
 
   // AA width for thin lines in CSS pixel space.
@@ -365,8 +404,8 @@ void main() {
     gridMask = max(gridMask, m);
   }
 
-  // Apply grid on top of disk fill/border.
-  col = mix(col, gridCol, clamp(gridMask, 0.0, 1.0));
+  // Apply grid on top of disk fill/border. Use u_gridColor alpha as intensity.
+  col = mix(col, gridCol, clamp(gridMask, 0.0, 1.0) * clamp(u_gridColor.a, 0.0, 1.0));
   outColor = vec4(col, outerAlpha);
 }
 `;
@@ -490,10 +529,27 @@ abstract class WebGLRendererBase implements Renderer {
   protected colors: string[] = DEFAULT_COLORS;
   protected backgroundColor = '#1a1a2e';
 
-  // Cached palette upload (avoid per-frame allocations)
-  protected paletteData = new Float32Array(16 * 4);
+  // Hyperbolic backdrop styling (Poincaré disk). Defaults match the reference-ish demo.
+  // NOTE: Defaults intentionally avoid a hardcoded "purple theme" so consumers
+  // (e.g. HyperView) don't need to override multiple knobs just to get a
+  // consistent background.
+  // - fill defaults to the same value as backgroundColor (set in init())
+  // - border/grid default to neutral light tones (override per app)
+  protected poincareDiskFillColor = this.backgroundColor;
+  protected poincareDiskBorderColor = '#ffffff';
+  protected poincareGridColor = '#ffffff33';
+  protected poincareDiskBorderWidthPx = 2;
+  protected poincareGridWidthPx = 0.5;
+
+  // Palette (label -> RGBA). Implemented as a small 2D texture so we can
+  // support arbitrary label counts (not limited to 16 uniforms).
   protected paletteSize = 0;
   protected paletteDirty = true;
+  protected paletteTex: WebGLTexture | null = null;
+  protected paletteTexW = 0;
+  protected paletteTexH = 0;
+  protected paletteBytes = new Uint8Array(0);
+  protected readonly paletteTexUnit = 1;
 
   // Scratch arrays (avoid per-call allocations in hit testing / selection)
   protected scratchIds: number[] = [];
@@ -530,6 +586,22 @@ abstract class WebGLRendererBase implements Renderer {
 
   protected markBackdropDirty(): void {
     this.backdropDirty = true;
+  }
+
+  protected uploadPoincareDiskStyleUniforms(): void {
+    const gl = this.gl;
+    const disk = this.poincareDisk;
+    if (!gl || !disk) return;
+
+    const fill = parseHexColor(this.poincareDiskFillColor);
+    const border = parseHexColor(this.poincareDiskBorderColor);
+    const grid = parseHexColor(this.poincareGridColor);
+
+    if (disk.uDiskFillColor) gl.uniform4f(disk.uDiskFillColor, fill[0], fill[1], fill[2], fill[3]);
+    if (disk.uDiskBorderColor) gl.uniform4f(disk.uDiskBorderColor, border[0], border[1], border[2], border[3]);
+    if (disk.uGridColor) gl.uniform4f(disk.uGridColor, grid[0], grid[1], grid[2], grid[3]);
+    if (disk.uDiskBorderWidthPx) gl.uniform1f(disk.uDiskBorderWidthPx, this.poincareDiskBorderWidthPx);
+    if (disk.uGridWidthPx) gl.uniform1f(disk.uGridWidthPx, this.poincareGridWidthPx);
   }
 
   // Overridden by the hyperbolic renderer.
@@ -633,13 +705,19 @@ abstract class WebGLRendererBase implements Renderer {
     program: WebGLProgram;
     uCssSize: WebGLUniformLocation | null;
     uDpr: WebGLUniformLocation | null;
+    uDiskFillColor: WebGLUniformLocation | null;
+    uDiskBorderColor: WebGLUniformLocation | null;
+    uGridColor: WebGLUniformLocation | null;
+    uDiskBorderWidthPx: WebGLUniformLocation | null;
+    uGridWidthPx: WebGLUniformLocation | null;
     // u_displayZoom is set via bindViewUniformsForProgram() (Hyperbolic)
   } | null = null;
 
   protected pointsCircle: {
     program: WebGLProgram;
-    uPalette: WebGLUniformLocation | null;
+    uPaletteTex: WebGLUniformLocation | null;
     uPaletteSize: WebGLUniformLocation | null;
+    uPaletteWidth: WebGLUniformLocation | null;
     uCssSize: WebGLUniformLocation | null;
     uDpr: WebGLUniformLocation | null;
     uPointRadius: WebGLUniformLocation | null;
@@ -647,8 +725,9 @@ abstract class WebGLRendererBase implements Renderer {
 
   protected pointsSquare: {
     program: WebGLProgram;
-    uPalette: WebGLUniformLocation | null;
+    uPaletteTex: WebGLUniformLocation | null;
     uPaletteSize: WebGLUniformLocation | null;
+    uPaletteWidth: WebGLUniformLocation | null;
     uCssSize: WebGLUniformLocation | null;
     uDpr: WebGLUniformLocation | null;
     uPointRadius: WebGLUniformLocation | null;
@@ -677,9 +756,25 @@ abstract class WebGLRendererBase implements Renderer {
     this.canvasDpr = this.deviceDpr;
     this.dpr = this.deviceDpr;
 
+    const hasDiskFillOverride = !!opts.poincareDiskFillColor;
     if (opts.backgroundColor) this.backgroundColor = opts.backgroundColor;
     if (opts.pointRadius) this.pointRadiusCss = opts.pointRadius;
     if (opts.colors) this.colors = opts.colors;
+
+    // Optional per-app styling for hyperbolic disk/grid.
+    // If the app did not specify a disk fill, keep it consistent with the
+    // global background color.
+    this.poincareDiskFillColor = hasDiskFillOverride
+      ? opts.poincareDiskFillColor!
+      : this.backgroundColor;
+    if (opts.poincareDiskBorderColor) this.poincareDiskBorderColor = opts.poincareDiskBorderColor;
+    if (opts.poincareGridColor) this.poincareGridColor = opts.poincareGridColor;
+    if (typeof opts.poincareDiskBorderWidthPx === 'number' && Number.isFinite(opts.poincareDiskBorderWidthPx)) {
+      this.poincareDiskBorderWidthPx = Math.max(0, opts.poincareDiskBorderWidthPx);
+    }
+    if (typeof opts.poincareGridWidthPx === 'number' && Number.isFinite(opts.poincareGridWidthPx)) {
+      this.poincareGridWidthPx = Math.max(0, opts.poincareGridWidthPx);
+    }
 
     this.paletteDirty = true;
 
@@ -860,6 +955,7 @@ abstract class WebGLRendererBase implements Renderer {
       if (this.backdropTex) gl.deleteTexture(this.backdropTex);
       if (this.pointsFbo) gl.deleteFramebuffer(this.pointsFbo);
       if (this.pointsTex) gl.deleteTexture(this.pointsTex);
+      if (this.paletteTex) gl.deleteTexture(this.paletteTex);
       if (this.programComposite) gl.deleteProgram(this.programComposite);
     }
 
@@ -899,38 +995,203 @@ abstract class WebGLRendererBase implements Renderer {
     this.pointsSquare = null;
     this.programSolid = null;
     this.poincareDisk = null;
+
+    this.paletteTex = null;
+    this.paletteTexW = 0;
+    this.paletteTexH = 0;
+    this.paletteSize = 0;
+    this.paletteDirty = true;
   }
 
   protected uploadPaletteUniforms(): void {
     const gl = this.gl;
     if (!gl) return;
 
-    const size = Math.min(16, this.colors.length);
-    this.paletteSize = size;
+    const rawSize = this.colors.length;
+    // Labels are Uint16 in the dataset, so the max addressable palette size is 65536.
+    const size = Math.max(1, Math.min(rawSize, 0xffff + 1));
 
-    // Fill cached palette buffer
-    this.paletteData.fill(0);
-    for (let i = 0; i < size; i++) {
-      const [r, g, b, a] = parseHexColor(this.colors[i]);
-      this.paletteData[i * 4 + 0] = r;
-      this.paletteData[i * 4 + 1] = g;
-      this.paletteData[i * 4 + 2] = b;
-      this.paletteData[i * 4 + 3] = a;
+    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+    const texW = Math.min(maxTex, size);
+    const texH = Math.ceil(size / texW);
+    if (texH > maxTex) {
+      throw new Error(`Palette too large for WebGL texture: size=${size}, maxTex=${maxTex}`);
     }
 
-    // Upload to both palette programs once; uniforms persist per-program.
+    // Allocate upload buffer (RGBA8)
+    const capacity = texW * texH;
+    if (this.paletteBytes.length !== capacity * 4) {
+      this.paletteBytes = new Uint8Array(capacity * 4);
+    } else {
+      this.paletteBytes.fill(0);
+    }
+
+    if (rawSize === 0) {
+      // Fallback: opaque white
+      this.paletteBytes[0] = 255;
+      this.paletteBytes[1] = 255;
+      this.paletteBytes[2] = 255;
+      this.paletteBytes[3] = 255;
+    } else {
+      for (let i = 0; i < size; i++) {
+        const [r, g, b, a] = parseHexColorBytes(this.colors[i]);
+        const o = i * 4;
+        this.paletteBytes[o + 0] = r;
+        this.paletteBytes[o + 1] = g;
+        this.paletteBytes[o + 2] = b;
+        this.paletteBytes[o + 3] = a;
+      }
+    }
+
+    if (!this.paletteTex) {
+      this.paletteTex = gl.createTexture();
+      if (!this.paletteTex) throw new Error('Failed to create palette texture');
+      gl.activeTexture(gl.TEXTURE0 + this.paletteTexUnit);
+      gl.bindTexture(gl.TEXTURE_2D, this.paletteTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+
+    this.paletteSize = size;
+    this.paletteTexW = texW;
+    this.paletteTexH = texH;
+
+    // Upload texture
+    gl.activeTexture(gl.TEXTURE0 + this.paletteTexUnit);
+    gl.bindTexture(gl.TEXTURE_2D, this.paletteTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, texW, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.paletteBytes);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
+
+    // Upload uniforms to both palette programs; uniforms persist per-program.
     const upload = (p: typeof this.pointsCircle | typeof this.pointsSquare) => {
       if (!p) return;
-      if (!p.uPalette || !p.uPaletteSize) return;
       gl.useProgram(p.program);
-      gl.uniform1i(p.uPaletteSize, this.paletteSize);
-      gl.uniform4fv(p.uPalette, this.paletteData);
+      if (p.uPaletteTex) gl.uniform1i(p.uPaletteTex, this.paletteTexUnit);
+      if (p.uPaletteSize) gl.uniform1i(p.uPaletteSize, this.paletteSize);
+      if (p.uPaletteWidth) gl.uniform1i(p.uPaletteWidth, this.paletteTexW);
     };
 
     upload(this.pointsCircle);
     upload(this.pointsSquare);
 
     this.paletteDirty = false;
+  }
+
+  protected bindPaletteTexture(): void {
+    const gl = this.gl;
+    if (!gl || !this.paletteTex) return;
+    gl.activeTexture(gl.TEXTURE0 + this.paletteTexUnit);
+    gl.bindTexture(gl.TEXTURE_2D, this.paletteTex);
+    // Restore predictable state for resource alloc helpers.
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  async countSelection(result: SelectionResult, opts: CountSelectionOptions = {}): Promise<number> {
+    const ds = this.dataset;
+    const idx = this.dataIndex;
+    if (!ds || !idx) return 0;
+
+    if (result.indices) return result.indices.size;
+    if (result.kind !== 'geometry' || !result.geometry) return 0;
+
+    const polygon = result.geometry.coords;
+    const nPoly = polygon.length / 2;
+    if (nPoly < 3) return 0;
+
+    // Bounds are usually attached by the candidate lassoSelect(). Compute as
+    // a fallback to keep this method robust.
+    let bounds = result.geometry.bounds;
+    if (!bounds) {
+      let xMin = Infinity;
+      let yMin = Infinity;
+      let xMax = -Infinity;
+      let yMax = -Infinity;
+      for (let i = 0; i < polygon.length; i += 2) {
+        const x = polygon[i];
+        const y = polygon[i + 1];
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+        if (y < yMin) yMin = y;
+        if (y > yMax) yMax = y;
+      }
+      bounds = { xMin, yMin, xMax, yMax };
+    }
+
+    const shouldCancel = opts.shouldCancel;
+    const onProgress = opts.onProgress;
+    const yieldEveryMs = (typeof opts.yieldEveryMs === 'number' && Number.isFinite(opts.yieldEveryMs))
+      ? Math.max(0, opts.yieldEveryMs)
+      : 8;
+
+    const eps = 1e-12;
+    const minX = bounds.xMin - eps;
+    const minY = bounds.yMin - eps;
+    const maxX = bounds.xMax + eps;
+    const maxY = bounds.yMax + eps;
+
+    const clampInt = (v: number, lo: number, hi: number): number => {
+      if (v < lo) return lo;
+      if (v > hi) return hi;
+      return v | 0;
+    };
+
+    const cx0 = clampInt(Math.floor((minX - idx.bounds.minX) / idx.cellSizeX), 0, idx.cellsX - 1);
+    const cy0 = clampInt(Math.floor((minY - idx.bounds.minY) / idx.cellSizeY), 0, idx.cellsY - 1);
+    const cx1 = clampInt(Math.floor((maxX - idx.bounds.minX) / idx.cellSizeX), 0, idx.cellsX - 1);
+    const cy1 = clampInt(Math.floor((maxY - idx.bounds.minY) / idx.cellSizeY), 0, idx.cellsY - 1);
+
+    const positions = ds.positions;
+    const ids = idx.ids;
+    const offsets = idx.offsets;
+
+    let selected = 0;
+    let processed = 0;
+
+    const CHECK_STRIDE = 16_384;
+    let nextCheck = CHECK_STRIDE;
+    let lastYieldTs = yieldEveryMs > 0 ? performance.now() : 0;
+
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const rowBase = cy * idx.cellsX;
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const cell = rowBase + cx;
+        const start = offsets[cell];
+        const end = offsets[cell + 1];
+        for (let k = start; k < end; k++) {
+          const i = ids[k];
+          const x = positions[i * 2];
+          const y = positions[i * 2 + 1];
+
+          // Tight AABB prefilter (cells overlap bounds).
+          if (x < bounds.xMin || x > bounds.xMax || y < bounds.yMin || y > bounds.yMax) continue;
+
+          if (pointInPolygon(x, y, polygon)) selected++;
+          processed++;
+
+          if (yieldEveryMs > 0 && processed >= nextCheck) {
+            nextCheck = processed + CHECK_STRIDE;
+
+            if (shouldCancel?.()) return selected;
+
+            const now = performance.now();
+            if (now - lastYieldTs >= yieldEveryMs) {
+              onProgress?.(selected, processed);
+              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+              lastYieldTs = performance.now();
+            }
+          }
+        }
+      }
+    }
+
+    onProgress?.(selected, processed);
+    return selected;
   }
 
   // ==== Required interaction methods (abstracts for math) ==== 
@@ -1133,6 +1394,7 @@ abstract class WebGLRendererBase implements Renderer {
 
     gl.useProgram(this.poincareDisk.program);
     this.bindViewUniformsForProgram(this.poincareDisk.program);
+    this.uploadPoincareDiskStyleUniforms();
     if (this.poincareDisk.uCssSize) gl.uniform2f(this.poincareDisk.uCssSize, this.width, this.height);
     if (this.poincareDisk.uDpr) gl.uniform1f(this.poincareDisk.uDpr, this.backdropDpr);
     gl.bindVertexArray(this.vao);
@@ -1168,15 +1430,25 @@ abstract class WebGLRendererBase implements Renderer {
         program: diskProgram,
         uCssSize: gl.getUniformLocation(diskProgram, 'u_cssSize'),
         uDpr: gl.getUniformLocation(diskProgram, 'u_dpr'),
+        uDiskFillColor: gl.getUniformLocation(diskProgram, 'u_diskFillColor'),
+        uDiskBorderColor: gl.getUniformLocation(diskProgram, 'u_diskBorderColor'),
+        uGridColor: gl.getUniformLocation(diskProgram, 'u_gridColor'),
+        uDiskBorderWidthPx: gl.getUniformLocation(diskProgram, 'u_diskBorderWidthPx'),
+        uGridWidthPx: gl.getUniformLocation(diskProgram, 'u_gridWidthPx'),
       };
+
+      // Upload style uniforms once; they persist for this program.
+      gl.useProgram(diskProgram);
+      this.uploadPoincareDiskStyleUniforms();
     }
 
     // Points pipeline (circle)
     gl.useProgram(circleProgram);
     this.pointsCircle = {
       program: circleProgram,
-      uPalette: gl.getUniformLocation(circleProgram, 'u_palette[0]'),
+      uPaletteTex: gl.getUniformLocation(circleProgram, 'u_paletteTex'),
       uPaletteSize: gl.getUniformLocation(circleProgram, 'u_paletteSize'),
+      uPaletteWidth: gl.getUniformLocation(circleProgram, 'u_paletteWidth'),
       uCssSize: gl.getUniformLocation(circleProgram, 'u_cssSize'),
       uDpr: gl.getUniformLocation(circleProgram, 'u_dpr'),
       uPointRadius: gl.getUniformLocation(circleProgram, 'u_pointRadiusCss'),
@@ -1186,8 +1458,9 @@ abstract class WebGLRendererBase implements Renderer {
     gl.useProgram(squareProgram);
     this.pointsSquare = {
       program: squareProgram,
-      uPalette: gl.getUniformLocation(squareProgram, 'u_palette[0]'),
+      uPaletteTex: gl.getUniformLocation(squareProgram, 'u_paletteTex'),
       uPaletteSize: gl.getUniformLocation(squareProgram, 'u_paletteSize'),
+      uPaletteWidth: gl.getUniformLocation(squareProgram, 'u_paletteWidth'),
       uCssSize: gl.getUniformLocation(squareProgram, 'u_cssSize'),
       uDpr: gl.getUniformLocation(squareProgram, 'u_dpr'),
       uPointRadius: gl.getUniformLocation(squareProgram, 'u_pointRadiusCss'),
@@ -1526,9 +1799,14 @@ abstract class WebGLRendererBase implements Renderer {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.bindTexture(gl.TEXTURE_2D, null);
       } else {
+        const [br, bg, bb, ba] = parseHexColor(this.backgroundColor);
+        gl.clearColor(br, bg, bb, ba);
         gl.clear(gl.COLOR_BUFFER_BIT);
       }
     } else {
+      // Restore clearColor (may have been changed to transparent for offscreen FBO)
+      const [br, bg, bb, ba] = parseHexColor(this.backgroundColor);
+      gl.clearColor(br, bg, bb, ba);
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
 
@@ -1556,6 +1834,7 @@ abstract class WebGLRendererBase implements Renderer {
 
     // Palette uniforms are uploaded once per program.
     if (this.paletteDirty) this.uploadPaletteUniforms();
+    this.bindPaletteTexture();
 
     if (basePoints.uCssSize) gl.uniform2f(basePoints.uCssSize, this.width, this.height);
     if (basePoints.uDpr) gl.uniform1f(basePoints.uDpr, this.dpr);
@@ -1615,7 +1894,7 @@ abstract class WebGLRendererBase implements Renderer {
 
       if (this.gpuUsesFullDataset) {
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionEbo);
-        gl.drawElements(gl.POINTS, this.selection.size, gl.UNSIGNED_INT, 0);
+        gl.drawElements(gl.POINTS, this.selectionOverlayCount, gl.UNSIGNED_INT, 0);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
       } else if (this.selectionVao && this.selectionOverlayCount > 0) {
         gl.bindVertexArray(this.selectionVao);
@@ -1679,6 +1958,7 @@ abstract class WebGLRendererBase implements Renderer {
         gl.useProgram(circlePoints.program);
         this.bindViewUniformsForProgram(circlePoints.program);
         if (this.paletteDirty) this.uploadPaletteUniforms();
+        this.bindPaletteTexture();
         if (circlePoints.uCssSize) gl.uniform2f(circlePoints.uCssSize, this.width, this.height);
         if (circlePoints.uDpr) gl.uniform1f(circlePoints.uDpr, this.dpr);
         if (circlePoints.uPointRadius) gl.uniform1f(circlePoints.uPointRadius, fillRadius);
@@ -1889,13 +2169,8 @@ export class EuclideanWebGLCandidate extends WebGLRendererBase {
 
     const startTime = performance.now();
 
-    // For very large datasets, avoid materializing a potentially multi-million
-    // index Set. Return the selection geometry in data space and rely on `has()`
-    // for membership checks (Embedding Atlas style).
-    //
-    // The harness validates lasso correctness via `SelectionResult.has()`.
-    const USE_GEOMETRY_THRESHOLD = 200_000;
-    const useGeometry = ds.n > USE_GEOMETRY_THRESHOLD;
+    // Always return geometry (Embedding Atlas style). The UI/benchmarks should
+    // use Renderer.countSelection(...) to obtain counts efficiently.
 
     const dataPolyline = new Float32Array(polyline.length);
     for (let i = 0; i < polyline.length / 2; i++) {
@@ -1906,37 +2181,32 @@ export class EuclideanWebGLCandidate extends WebGLRendererBase {
       dataPolyline[i * 2 + 1] = data.y;
     }
 
-    if (useGeometry) {
-      // Tight AABB for fast reject in has().
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (let i = 0; i < dataPolyline.length; i += 2) {
-        const x = dataPolyline[i];
-        const y = dataPolyline[i + 1];
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-
-      const geometry: SelectionGeometry = { type: 'polygon', coords: dataPolyline };
-      const computeTimeMs = performance.now() - startTime;
-      return createGeometrySelectionResult(
-        geometry,
-        ds.positions,
-        computeTimeMs,
-        (px, py, polygon) => {
-          if (px < minX || px > maxX || py < minY || py > maxY) return false;
-          return pointInPolygon(px, py, polygon);
-        }
-      );
+    // Tight AABB for fast reject in has() and efficient indexed counting.
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < dataPolyline.length; i += 2) {
+      const x = dataPolyline[i];
+      const y = dataPolyline[i + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
     }
 
-    const indices = lassoSelectIndexed(ds.positions, dataPolyline, idx);
-
-    return createIndicesSelectionResult(indices, performance.now() - startTime);
+    const bounds = { xMin: minX, yMin: minY, xMax: maxX, yMax: maxY };
+    const geometry: SelectionGeometry = { type: 'polygon', coords: dataPolyline, bounds };
+    const computeTimeMs = performance.now() - startTime;
+    return createGeometrySelectionResult(
+      geometry,
+      ds.positions,
+      computeTimeMs,
+      (px, py, polygon) => {
+        if (px < bounds.xMin || px > bounds.xMax || py < bounds.yMin || py > bounds.yMax) return false;
+        return pointInPolygon(px, py, polygon);
+      }
+    );
   }
 
   projectToScreen(dataX: number, dataY: number): { x: number; y: number } {
@@ -2264,10 +2534,8 @@ export class HyperbolicWebGLCandidate extends WebGLRendererBase {
 
     const startTime = performance.now();
 
-    // Same strategy as Euclidean: for very large datasets, return geometry to
-    // avoid enumerating massive index sets. Correctness is verified via `has()`.
-    const USE_GEOMETRY_THRESHOLD = 200_000;
-    const useGeometry = ds.n > USE_GEOMETRY_THRESHOLD;
+    // Always return geometry (Embedding Atlas style). The UI/benchmarks should
+    // use Renderer.countSelection(...) to obtain counts efficiently.
 
     const dataPolyline = new Float32Array(polyline.length);
     for (let i = 0; i < polyline.length / 2; i++) {
@@ -2278,37 +2546,32 @@ export class HyperbolicWebGLCandidate extends WebGLRendererBase {
       dataPolyline[i * 2 + 1] = data.y;
     }
 
-    if (useGeometry) {
-      // Tight AABB for fast reject in has().
-      let minX = Infinity;
-      let minY = Infinity;
-      let maxX = -Infinity;
-      let maxY = -Infinity;
-      for (let i = 0; i < dataPolyline.length; i += 2) {
-        const x = dataPolyline[i];
-        const y = dataPolyline[i + 1];
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-
-      const geometry: SelectionGeometry = { type: 'polygon', coords: dataPolyline };
-      const computeTimeMs = performance.now() - startTime;
-      return createGeometrySelectionResult(
-        geometry,
-        ds.positions,
-        computeTimeMs,
-        (px, py, polygon) => {
-          if (px < minX || px > maxX || py < minY || py > maxY) return false;
-          return pointInPolygon(px, py, polygon);
-        }
-      );
+    // Tight AABB for fast reject in has() and efficient indexed counting.
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < dataPolyline.length; i += 2) {
+      const x = dataPolyline[i];
+      const y = dataPolyline[i + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
     }
 
-    const indices = lassoSelectIndexed(ds.positions, dataPolyline, idx);
-
-    return createIndicesSelectionResult(indices, performance.now() - startTime);
+    const bounds = { xMin: minX, yMin: minY, xMax: maxX, yMax: maxY };
+    const geometry: SelectionGeometry = { type: 'polygon', coords: dataPolyline, bounds };
+    const computeTimeMs = performance.now() - startTime;
+    return createGeometrySelectionResult(
+      geometry,
+      ds.positions,
+      computeTimeMs,
+      (px, py, polygon) => {
+        if (px < bounds.xMin || px > bounds.xMax || py < bounds.yMin || py > bounds.yMax) return false;
+        return pointInPolygon(px, py, polygon);
+      }
+    );
   }
 
   projectToScreen(dataX: number, dataY: number): { x: number; y: number } {
