@@ -427,18 +427,12 @@ async function runSingleBenchmark(
   onProgress?.(`Measuring lasso selection...`, 0.8);
 
   // Lasso selection benchmark
-  // NOTE: At very large N, a large lasso can select millions of points, causing
-  // massive allocations and multi-minute main-thread stalls. For the perf
-  // benchmark we keep the lasso region small enough to stay tractable, while
-  // still exercising the selection pipeline.
+  // Use consistent lasso size regardless of point count. Implementations must
+  // handle large selections efficiently - the harness does not compensate.
   const overrideScale = config.lassoRadiusScale;
   const lassoRadius = (typeof overrideScale === 'number' && Number.isFinite(overrideScale) && overrideScale > 0)
     ? Math.min(width, height) * overrideScale
-    : pointCount >= 10_000_000
-      ? Math.min(width, height) * 0.08
-      : pointCount >= 1_000_000
-        ? Math.min(width, height) * 0.15
-        : Math.min(width, height) * 0.4;
+    : Math.min(width, height) * 0.4;
   const lassoPolygon = generateTestPolygon(width / 2, height / 2, lassoRadius);
   const lassoResult = renderer.lassoSelect(lassoPolygon);
 
@@ -466,7 +460,9 @@ async function runSingleBenchmark(
     panFrameIntervalMs: calculateStats(panIntervals.length > 0 ? panIntervals : [16.67]),
     hoverFrameIntervalMs: calculateStats(hoverIntervals.length > 0 ? hoverIntervals : [16.67]),
     lassoMs: lassoResult.computeTimeMs,
-    lassoSelectedCount: lassoResult.indices.size,
+    // For indices-based selections, report the count directly.
+    // For geometry-based selections, this would require iterating all points.
+    lassoSelectedCount: lassoResult.indices?.size ?? -1,
     memoryMB,
 
     candidatePolicy: rendererMode === 'webgl'

@@ -58,18 +58,82 @@ The harness provides:
 1) **Correctness gates** (reference vs candidate accuracy)
 2) **Performance benchmarks** (render + interaction workloads)
 
-The **exact commands/flags and how to run them** are owned by the harness engineer and documented in **`CLAUDE.md`** (and the benchmark docs in `src/benchmarks/README.md`).
-
-Operational expectations:
+Operational expectations (read this literally — it will save you time):
 
 - Prefer running benchmarks via the **CLI runners** (reproducible, scriptable, fewer UI variables).
-- For **performance** numbers, do **not** rely on **headless** runs as the source of truth (headless can change GPU/RAF timing and skew results). Use headed/interactive runs for final perf validation; headless is fine for quick smoke checks and automation.
+- For **performance** numbers, **do not** use **headless** runs as the source of truth.
+  - Headless mode can change GPU scheduling / RAF timing and can significantly skew results.
+  - **Use headed (non-headless) runs** for any number you intend to compare, report, or log.
+  - Headless is acceptable for quick “does it run” smoke checks or CI automation.
 
 As a candidate engineer, your iteration loop should be:
 
 - run the accuracy suite after any semantics-affecting change
 - only optimize after you’re passing correctness
 - re-run benchmarks frequently to catch regressions
+- when adding a performance trick, always benchmark **before and after**, and write the results down (see the optimization log below)
+
+---
+
+## Running the benchmark suite (copy/paste)
+
+All commands are run from the repo root.
+
+### 0) Install deps (once)
+
+- `npm install`
+
+### 1) Correctness gate (browser accuracy)
+
+This compares **reference (Canvas2D)** vs **candidate (WebGL)** behavior.
+
+- **Headed (recommended when debugging):**
+  - `npm run bench:accuracy`
+- **Headless (CI / smoke only):**
+  - `npm run bench:accuracy -- --headless`
+  - Optional knobs: `--dpr=2`, `--timeout=180000`
+
+If this fails, fix correctness before looking at performance numbers.
+
+### 2) Performance benchmarks (browser, automated)
+
+This launches a browser via Puppeteer, drives interactions, and prints a table.
+
+- **Candidate (WebGL) — headed (default; required for real perf):**
+  - `npm run bench`
+  - or explicitly: `npm run bench -- --renderer=webgl`
+
+- **Reference (Canvas2D) — headed:**
+  - `npm run bench -- --renderer=reference`
+
+Common overrides (apply to either renderer):
+
+- Limit point counts (faster iteration):
+  - `npm run bench -- --points=10000,100000,500000`
+- Run only one geometry:
+  - `npm run bench -- --geometries=euclidean`
+  - `npm run bench -- --geometries=poincare`
+- Increase timeout for large-N runs:
+  - `npm run bench -- --timeout=240000`
+
+Headless controls (use intentionally):
+
+- **Force headed:** `npm run bench -- --headed` (or `--no-headless`)
+- **Force headless (CI / smoke only):** `npm run bench -- --headless`
+
+Notes:
+
+- The runner starts its own Vite dev server on a fixed port and will open a controlled browser window.
+  Avoid interacting with that window during a run.
+- The printed table includes dataset generation time, CPU submit time, frame interval (FPS), pan/hover FPS, hit-test time, lasso time, and memory.
+
+### 3) Manual UI (optional)
+
+If you want to see the benchmark UI and run things by clicking buttons:
+
+- `npm run bench:browser`
+
+For deeper details on what each metric means, see `src/benchmarks/README.md`.
 
 ---
 
@@ -79,6 +143,25 @@ Keep a short, append-only log of what you tried and what happened. This saves ti
 
 - Suggested location: `research/candidate_optimization_log.md`
 - What to record: change summary, point counts/geometries tested, results (FPS / ms), correctness notes, and whether the technique was a win/loss.
+
+When you introduce a performance technique/trick, the log should include:
+
+- the **before** benchmark numbers (same scenario/config)
+- the **after** benchmark numbers
+- any observable trade-offs (quality, memory, cross-browser behavior)
+
+---
+
+## Hyperparameters: tune by measurement, not intuition
+
+The candidate will likely have “knobs” (hyperparameters) such as thresholds, budgets, DPR floors, LOD cutovers, index granularities, etc.
+
+Guidelines:
+
+- Avoid setting hyperparameters purely based on intuition.
+- Prefer running **benchmark sweeps** across reasonable ranges to find robust values.
+- Don’t overfit hyperparameters to a single machine/browser/GPU; choose values that generalize to major browsers and good consumer hardware.
+- Validate knobs on **both** geometries and multiple point counts (small + large), and record the sweep results (or at least the final rationale) in `research/candidate_optimization_log.md`.
 
 ---
 

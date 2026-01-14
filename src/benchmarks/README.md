@@ -43,6 +43,32 @@ interface Renderer {
 }
 ```
 
+### SelectionResult Contract
+
+The `lassoSelect()` method returns a `SelectionResult`:
+
+```typescript
+interface SelectionResult {
+  kind: 'indices' | 'geometry';
+  indices?: Set<number>;           // For kind === 'indices'
+  geometry?: SelectionGeometry;    // For kind === 'geometry'
+  computeTimeMs: number;
+  has(index: number): boolean;     // Required for all kinds
+}
+```
+
+Implementations may return either:
+- **`kind: 'indices'`**: Direct set of selected point indices
+- **`kind: 'geometry'`**: Selection polygon in data coordinates with lazy `has()` evaluation
+
+The `has()` method is required for correctness verification. The harness uses it to test
+membership for all points, allowing implementations flexibility in how they represent
+selections internally (e.g., GPU-based geometry predicates instead of index enumeration).
+
+Use the helper functions to create properly-formed results:
+- `createIndicesSelectionResult(indices, computeTimeMs)` - for index-based selections
+- `createGeometrySelectionResult(geometry, positions, computeTimeMs, pointInPolygonFn)` - for geometry-based
+
 ### Step 2: Use Reference Implementations as Ground Truth
 
 Study the reference implementations in `src/impl_reference/`:
@@ -114,7 +140,7 @@ Once accuracy passes:
 2. Click **"Run Performance Benchmark"**
 3. Compare FPS at different point counts
 
-Target: **1M points at 60 FPS**
+Target: **20M points at 60 FPS**
 
 ## Expected Tolerances
 
@@ -125,9 +151,21 @@ Target: **1M points at 60 FPS**
 | Pan view state | < 1e-10 | Machine precision |
 | Zoom view state | < 1e-10 | Machine precision |
 | Hit test | Exact | Same point index |
-| Lasso select | Exact | Same set of indices |
+| Lasso select | Exact | Verified via `has()` membership test for all points |
 
 For boundary edge cases (points near |z| = 1), tolerance is relaxed to 1e-5.
+
+## Harness Design Philosophy
+
+The benchmark harness is intentionally implementation-agnostic:
+
+- **Consistent test conditions**: The lasso polygon size is fixed (40% of canvas) regardless
+  of point count. Implementations must handle large selections efficiently.
+- **Contract-based verification**: Accuracy is verified via the `has()` method, not by
+  comparing internal data structures. This allows implementations to use indices, bitsets,
+  geometry predicates, or GPU-based solutions.
+- **No implementation hints**: The harness does not adapt its behavior based on point count
+  or suggest specific optimization strategies.
 
 ## Iteration Workflow
 
@@ -144,7 +182,7 @@ For boundary edge cases (points near |z| = 1), tolerance is relaxed to 1e-5.
 │  4. npm run bench:browser → Run Performance Benchmark       │
 │     └─ Measure FPS improvement                              │
 ├─────────────────────────────────────────────────────────────┤
-│  5. Repeat until 1M @ 60fps                                 │
+│  5. Repeat until 20M @ 60fps                                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -178,11 +216,13 @@ For boundary edge cases (points near |z| = 1), tolerance is relaxed to 1e-5.
 
 ### Lasso Mismatch
 ```
-[FAIL] lassoSelect: ref=523 points vs cand=521 points
+[FAIL] lassoSelect: Mismatch at index 1234; ref=523 points vs cand=521 points
 ```
+- The harness tests every point using `has()` and reports the first mismatch index
 - Check point-in-polygon algorithm
 - Verify polyline is unprojected to data space correctly
 - Edge case: points exactly on polygon boundary
+- For geometry-based selections: verify the `has()` implementation matches reference behavior
 
 ## File Structure
 

@@ -69,9 +69,43 @@ export interface HitResult {
   distance: number;
 }
 
+/**
+ * Geometry-based selection shape in data coordinates.
+ * Allows implementations to defer index enumeration.
+ */
+export interface SelectionGeometry {
+  type: 'polygon';
+  /** Polygon vertices in data coordinates: [x0, y0, x1, y1, ...] */
+  coords: Float32Array;
+}
+
+/**
+ * Result of a lasso/selection operation.
+ *
+ * Implementations may return either:
+ * - kind: 'indices' with a Set<number> of selected point indices
+ * - kind: 'geometry' with the selection shape in data coordinates
+ *
+ * Both kinds must provide a has() method for membership testing.
+ */
 export interface SelectionResult {
-  indices: Set<number>;
+  /** How the selection is represented */
+  kind: 'indices' | 'geometry';
+
+  /** For kind === 'indices': the selected point indices */
+  indices?: Set<number>;
+
+  /** For kind === 'geometry': selection shape in data coordinates */
+  geometry?: SelectionGeometry;
+
+  /** Time to compute the selection */
   computeTimeMs: number;
+
+  /**
+   * Test if a point index is in the selection.
+   * Required for all kinds - enables correctness verification.
+   */
+  has(index: number): boolean;
 }
 
 export type InteractionMode = 'pan' | 'lasso';
@@ -160,3 +194,45 @@ export const DEFAULT_COLORS = [
 
 export const SELECTION_COLOR = '#ff0000';
 export const HOVER_COLOR = '#ffffff';
+
+// ============================================================================
+// Selection Result Helpers
+// ============================================================================
+
+/**
+ * Create a SelectionResult from a Set of indices.
+ * Convenience helper for implementations that compute indices directly.
+ */
+export function createIndicesSelectionResult(
+  indices: Set<number>,
+  computeTimeMs: number
+): SelectionResult {
+  return {
+    kind: 'indices',
+    indices,
+    computeTimeMs,
+    has: (index: number) => indices.has(index),
+  };
+}
+
+/**
+ * Create a SelectionResult from geometry and a positions array.
+ * The has() method tests point membership against the polygon.
+ */
+export function createGeometrySelectionResult(
+  geometry: SelectionGeometry,
+  positions: Float32Array,
+  computeTimeMs: number,
+  pointInPolygonFn: (px: number, py: number, polygon: Float32Array) => boolean
+): SelectionResult {
+  return {
+    kind: 'geometry',
+    geometry,
+    computeTimeMs,
+    has: (index: number) => {
+      const x = positions[index * 2];
+      const y = positions[index * 2 + 1];
+      return pointInPolygonFn(x, y, geometry.coords);
+    },
+  };
+}

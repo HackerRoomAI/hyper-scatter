@@ -3,11 +3,12 @@
  * Provides interactive UI for testing reference implementations.
  */
 
-import { Dataset, GeometryMode, Renderer, InteractionMode, Modifiers } from '../core/types.js';
+import { Dataset, GeometryMode, Renderer, InteractionMode, Modifiers, SelectionResult } from '../core/types.js';
 import { generateDataset } from '../core/dataset.js';
 import { EuclideanReference } from '../impl_reference/euclidean_reference.js';
 import { HyperbolicReference } from '../impl_reference/hyperbolic_reference.js';
 import { EuclideanWebGLCandidate, HyperbolicWebGLCandidate } from '../impl_candidate/webgl_candidate.js';
+import { simplifyPolygonData } from './lasso_simplify.js';
 
 type RendererType = 'webgl' | 'reference';
 
@@ -43,7 +44,80 @@ let isDragging = false;
 let isLassoing = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
-let lassoPoints: number[] = [];
+
+// Lasso UX notes (Embedding Atlas style):
+// - Gesture: Shift + Meta/Ctrl drag (momentary) starts lasso.
+// - Lasso vertices are simplified continuously while dragging.
+// - The lasso overlay persists after mouse-up until explicitly cleared.
+// - The persistent overlay is stored in DATA SPACE so it tracks pan/zoom.
+const LASSO_MAX_VERTS_INTERACTION = 24;
+const LASSO_MAX_VERTS_FINAL = 24;
+const LASSO_MIN_SAMPLE_DIST_PX = 2.0;
+
+// Raw sampled lasso points in DATA SPACE (interleaved x,y).
+// We sample in data space (Embedding Atlas style) so simplification is
+// view-invariant and avoids screen-space artifacts.
+let lassoRawDataPoints: number[] = [];
+
+// Current simplified lasso polygon in DATA SPACE (interleaved x,y).
+let lassoActiveDataPolygon: Float32Array | null = null;
+
+// For sampling thresholding (screen space).
+let lassoLastScreenX = 0;
+let lassoLastScreenY = 0;
+let lassoDirty = false;
+
+// Persisted range selection (data-space polygon: interleaved x,y).
+let rangeSelectionDataPolygon: Float32Array | null = null;
+
+function projectDataPolygonToScreen(polyData: Float32Array): Float32Array {
+  if (!renderer) return polyData;
+  const n = polyData.length / 2;
+  const out = new Float32Array(polyData.length);
+  for (let i = 0; i < n; i++) {
+    const x = polyData[i * 2];
+    const y = polyData[i * 2 + 1];
+    const s = renderer.projectToScreen(x, y);
+    out[i * 2] = s.x;
+    out[i * 2 + 1] = s.y;
+  }
+  return out;
+}
+
+// Cancel token for async selection materialization.
+let selectionJobId = 0;
+
+async function countSelectionAsync(
+  jobId: number,
+  result: SelectionResult,
+  ds: Dataset,
+): Promise<void> {
+  // Count selected points for predicate-style results (range selection).
+  // We keep UI responsive by chunking and yielding to rAF.
+  let totalCount = 0;
+  const chunk = 50_000;
+  let i = 0;
+
+  while (i < ds.n) {
+    const end = Math.min(ds.n, i + chunk);
+    for (; i < end; i++) {
+      if (result.has(i)) {
+        totalCount++;
+      }
+    }
+
+    if (jobId !== selectionJobId) return; // cancelled
+
+    // Yield so UI stays responsive.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    const suffix = i < ds.n ? ' (computing…)' : '';
+    statSelected.textContent = `${totalCount.toLocaleString()}${suffix}`;
+  }
+
+  if (jobId !== selectionJobId) return;
+  statSelected.textContent = totalCount.toLocaleString();
+}
 
 // Frame scheduling + throttling
 let rafPending = false;
@@ -191,6 +265,9 @@ function generateAndLoad(): void {
     geometry,
   });
 
+  // Cancel any in-flight selection job.
+  selectionJobId++;
+
   // Initialize renderer if needed (geometry or renderer type changed)
   if (currentGeometry !== geometry || currentRendererType !== rendererType || !renderer) {
     initRenderer(geometry, rendererType);
@@ -298,41 +375,75 @@ function render(): void {
     statFrameTime.textContent = `${avgIntervalMs.toFixed(2)}ms (${fps.toFixed(1)} FPS, cpu ${avgCpuMs.toFixed(2)}ms)`;
   }
 
-  // Draw lasso if active
-  if (isLassoing && lassoPoints.length >= 4) {
-    drawLasso();
+  // Draw lasso only while actively drawing.
+  if (isLassoing) {
+    // Continuously simplify while dragging to keep overlay + selection snappy.
+    // (Embedding Atlas uses simplifyPolygon(points, 24).)
+    if (lassoDirty) {
+      lassoDirty = false;
+      if (lassoRawDataPoints.length >= 6) {
+        lassoActiveDataPolygon = simplifyPolygonData(lassoRawDataPoints, LASSO_MAX_VERTS_INTERACTION);
+      } else {
+        lassoActiveDataPolygon = null;
+      }
+    }
+  }
+
+  // Overlay rendering is UI-only; keep it decoupled from WebGL.
+  // - While dragging, draw the (simplified) in-progress lasso in screen space.
+  // - When not dragging, draw the persisted lasso projected from data space.
+  if (isLassoing && lassoActiveDataPolygon && lassoActiveDataPolygon.length >= 6) {
+    drawLassoData(lassoActiveDataPolygon);
+  } else if (rangeSelectionDataPolygon && rangeSelectionDataPolygon.length >= 6) {
+    drawLassoData(rangeSelectionDataPolygon);
+  } else {
+    // Nothing to show.
+    overlayCanvas.style.display = 'none';
+    const ctx = overlayCanvas.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   }
 }
 
 /**
- * Draw the lasso selection polygon.
+ * Draw a lasso polygon given in SCREEN SPACE (interleaved x,y).
  */
-function drawLasso(): void {
-  // Only show overlay when actively drawing.
+function drawLassoScreen(polyline: Float32Array): void {
   overlayCanvas.style.display = 'block';
   const ctx = overlayCanvas.getContext('2d');
   if (!ctx) return;
 
-  const rect = canvasBody.getBoundingClientRect();
-  const width = rect.width;
-  const height = rect.height;
+  const width = overlayCanvas.width;
+  const height = overlayCanvas.height;
   ctx.clearRect(0, 0, width, height);
 
-  // Draw lasso path
+  if (polyline.length < 6) return;
+
   ctx.strokeStyle = '#ff66aa';
   ctx.lineWidth = 2;
   ctx.setLineDash([5, 5]);
   ctx.beginPath();
-  ctx.moveTo(lassoPoints[0], lassoPoints[1]);
-  for (let i = 2; i < lassoPoints.length; i += 2) {
-    ctx.lineTo(lassoPoints[i], lassoPoints[i + 1]);
+  ctx.moveTo(polyline[0], polyline[1]);
+  for (let i = 2; i < polyline.length; i += 2) {
+    ctx.lineTo(polyline[i], polyline[i + 1]);
   }
   ctx.closePath();
   ctx.stroke();
 
-  // Fill with transparent color
-  ctx.fillStyle = 'rgba(255, 102, 170, 0.1)';
+  ctx.fillStyle = 'rgba(255, 102, 170, 0.10)';
   ctx.fill();
+}
+
+/**
+ * Draw a lasso polygon given in DATA SPACE (interleaved x,y).
+ * The overlay is projected each frame so it tracks pan/zoom correctly.
+ */
+function drawLassoData(polygonData: Float32Array): void {
+  if (!renderer) return;
+
+  const n = polygonData.length / 2;
+  if (n < 3) return;
+
+  drawLassoScreen(projectDataPolygonToScreen(polygonData));
 }
 
 /**
@@ -353,12 +464,32 @@ function handleMouseDown(e: MouseEvent): void {
   lastMouseX = x;
   lastMouseY = y;
 
-  if (e.shiftKey) {
-    // Start lasso
+  // Embedding Atlas gesture:
+  // - momentary lasso: Shift + Meta (Cmd on macOS) or Shift + Ctrl
+  const wantsLasso = e.shiftKey && (e.metaKey || e.ctrlKey);
+
+  // Plain click clears the persistent range selection (lasso overlay).
+  // This matches the Embedding Atlas behavior: rangeSelection persists until cleared.
+  // NOTE: We only clear range selection here; point selection is preserved.
+  if (!wantsLasso && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && rangeSelectionDataPolygon) {
+    rangeSelectionDataPolygon = null;
+    // Cancel any in-flight selection materialization since the predicate changed.
+    selectionJobId++;
+    requestRender();
+  }
+
+  if (wantsLasso) {
+    if (!renderer) return;
     mode = 'lasso';
     isLassoing = true;
     overlayCanvas.style.display = 'block';
-    lassoPoints = [x, y];
+    const d0 = renderer.unprojectFromScreen(x, y);
+    lassoRawDataPoints = [d0.x, d0.y];
+    lassoActiveDataPolygon = null;
+    lassoLastScreenX = x;
+    lassoLastScreenY = y;
+    lassoDirty = true;
+    statSelected.textContent = '0';
     updateModeIndicator();
     requestRender();
   } else {
@@ -405,7 +536,19 @@ function handleMouseMove(e: MouseEvent): void {
     lastMouseY = y;
     requestRender();
   } else if (isLassoing) {
-    lassoPoints.push(x, y);
+    // Avoid capturing every single mousemove event (can be thousands of vertices).
+    // Sample only when we moved enough in screen space.
+    const dx = x - lassoLastScreenX;
+    const dy = y - lassoLastScreenY;
+    if (dx * dx + dy * dy >= LASSO_MIN_SAMPLE_DIST_PX * LASSO_MIN_SAMPLE_DIST_PX) {
+      if (renderer) {
+        const d = renderer.unprojectFromScreen(x, y);
+        lassoRawDataPoints.push(d.x, d.y);
+        lassoDirty = true;
+      }
+      lassoLastScreenX = x;
+      lassoLastScreenY = y;
+    }
     requestRender();
   } else if (renderer) {
     // Hover test (throttled to rAF)
@@ -426,18 +569,42 @@ function handleMouseUp(_e: MouseEvent): void {
     pendingPanDy = 0;
   }
 
-  if (isLassoing && renderer && lassoPoints.length >= 6) {
-    // Complete lasso selection
-    const polyline = new Float32Array(lassoPoints);
-    const result = renderer.lassoSelect(polyline);
-    renderer.setSelection(result.indices);
-    statSelected.textContent = result.indices.size.toLocaleString();
+  if (isLassoing && renderer && lassoRawDataPoints.length >= 6) {
+    // Complete lasso selection.
+    const dataPoly = lassoActiveDataPolygon ?? simplifyPolygonData(lassoRawDataPoints, LASSO_MAX_VERTS_FINAL);
+    const screenPolyline = projectDataPolygonToScreen(dataPoly);
+    const result = renderer.lassoSelect(screenPolyline);
+
+    // Persist the range selection overlay in DATA SPACE (so it tracks pan/zoom).
+    rangeSelectionDataPolygon = dataPoly;
+
+    // Apply selection (Embedding Atlas style):
+    // - For small selections (explicit indices), highlight selected points.
+    // - For large-N predicate selections (geometry), do NOT try to highlight
+    //   all points (the renderer caps the overlay and it looks like "missing"
+    //   points near the edges). Keep only the range-selection overlay and show
+    //   an accurate count.
+    if (result.indices) {
+      renderer.setSelection(result.indices);
+      statSelected.textContent = result.indices.size.toLocaleString();
+    } else if (result.kind === 'geometry' && dataset) {
+      // Clear any prior point-highlight selection.
+      renderer.setSelection(new Set());
+
+      statSelected.textContent = '…';
+      const jobId = ++selectionJobId;
+      void countSelectionAsync(jobId, result, dataset);
+    } else {
+      statSelected.textContent = '0';
+    }
     statLassoTime.textContent = `${result.computeTimeMs.toFixed(2)}ms`;
   }
 
   isDragging = false;
   isLassoing = false;
-  lassoPoints = [];
+  lassoRawDataPoints = [];
+  lassoActiveDataPolygon = null;
+  lassoDirty = false;
   pendingPanDx = 0;
   pendingPanDy = 0;
   hoverDirty = false;
@@ -449,15 +616,9 @@ function handleMouseUp(_e: MouseEvent): void {
   if (renderer && 'endInteraction' in (renderer as any)) {
     (renderer as any).endInteraction();
   }
-  // Clear overlay lasso.
-  {
-    overlayCanvas.style.display = 'none';
-    const ctx = overlayCanvas.getContext('2d');
-    if (ctx) {
-      const rect = canvasBody.getBoundingClientRect();
-      ctx.clearRect(0, 0, rect.width, rect.height);
-    }
-  }
+
+  // Do NOT hide the overlay here: Embedding Atlas keeps range selection visible
+  // until explicitly cleared (plain click / dbl-click).
   mode = 'pan';
   updateModeIndicator();
   requestRender();
@@ -488,8 +649,15 @@ function handleDoubleClick(): void {
   if (!renderer) return;
 
   // Clear selection
+  selectionJobId++;
   renderer.setSelection(new Set());
   statSelected.textContent = '0';
+
+  // Hide overlay since range selection is cleared.
+  rangeSelectionDataPolygon = null;
+  overlayCanvas.style.display = 'none';
+  const ctx = overlayCanvas.getContext('2d');
+  if (ctx) ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   requestRender();
 }
 

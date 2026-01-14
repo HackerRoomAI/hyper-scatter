@@ -8,7 +8,6 @@
  */
 
 import { pointInPolygon } from '../core/selection/point_in_polygon.js';
-import { BitsetNumberSet } from '../core/selection/bitset_number_set.js';
 
 interface Bounds2D {
   minX: number;
@@ -185,13 +184,7 @@ export function lassoSelectIndexed(
   polygonDataSpace: Float32Array,
   index: UniformGridIndex
 ): Set<number> {
-  const n = (positions.length / 2) | 0;
-
-  // For huge datasets, a JS Set can OOM if the lasso selects millions of points.
-  // Use a bitset-backed Set implementation instead.
-  const result: Set<number> = n >= 2_000_000
-    ? new BitsetNumberSet(n)
-    : new Set<number>();
+  const result: Set<number> = new Set<number>();
 
   const nPoly = polygonDataSpace.length / 2;
   if (nPoly < 3) return result;

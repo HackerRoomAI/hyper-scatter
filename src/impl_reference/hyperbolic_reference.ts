@@ -23,6 +23,7 @@ import {
   DEFAULT_COLORS,
   SELECTION_COLOR,
   HOVER_COLOR,
+  createIndicesSelectionResult,
 } from '../core/types.js';
 import {
   createHyperbolicView,
@@ -347,7 +348,7 @@ export class HyperbolicReference implements Renderer {
 
   lassoSelect(polyline: Float32Array): SelectionResult {
     if (!this.dataset) {
-      return { indices: new Set(), computeTimeMs: 0 };
+      return createIndicesSelectionResult(new Set(), 0);
     }
 
     const startTime = performance.now();
@@ -366,7 +367,7 @@ export class HyperbolicReference implements Renderer {
     const indices = lassoSelectBruteForce(this.dataset.positions, dataPolyline);
 
     const computeTimeMs = performance.now() - startTime;
-    return { indices, computeTimeMs };
+    return createIndicesSelectionResult(indices, computeTimeMs);
   }
 
   projectToScreen(dataX: number, dataY: number): { x: number; y: number } {

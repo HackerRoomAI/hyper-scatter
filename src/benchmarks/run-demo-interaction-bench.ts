@@ -67,8 +67,10 @@ interface Config {
 const DEFAULTS: Config = {
   headless: false,
   dpr: 2,
-  width: 1800,
-  height: 1100,
+  // Keep defaults small enough to fit on typical laptop screens when running headed.
+  // You can still override for perf comparisons via --width/--height.
+  width: 1400,
+  height: 900,
   geometry: 'poincare',
   points: 1_000_000,
   panMs: 5000,
@@ -238,14 +240,6 @@ async function setDemoControls(page: Page, cfg: Config): Promise<void> {
   await sleep(250);
 }
 
-async function getCanvasRect(page: Page): Promise<{ left: number; top: number; width: number; height: number }>
-{
-  return page.$eval('#canvas', (el) => {
-    const r = (el as HTMLCanvasElement).getBoundingClientRect();
-    return { left: r.left, top: r.top, width: r.width, height: r.height };
-  });
-}
-
 async function measurePhase(page: Page, label: string, run: () => Promise<void>): Promise<any> {
   await page.evaluate(() => (window as any).__fpsProbe.start());
   await run();
@@ -255,7 +249,7 @@ async function measurePhase(page: Page, label: string, run: () => Promise<void>)
 }
 
 async function runPanToEdges(page: Page, cfg: Config): Promise<void> {
-  const panViews = await page.evaluate(async (params: { geometry: 'euclidean' | 'poincare'; durationMs: number }) => {
+  await page.evaluate(async (params: { geometry: 'euclidean' | 'poincare'; durationMs: number }) => {
     const canvas = document.getElementById('canvas') as HTMLCanvasElement | null;
     if (!canvas) throw new Error('Canvas not found');
     const rect = canvas.getBoundingClientRect();
@@ -290,11 +284,6 @@ async function runPanToEdges(page: Page, cfg: Config): Promise<void> {
     // Start drag at center.
     dispatch('mousedown', cx, cy, 1);
 
-    const readView = () => (window as any).__vizDemo?.getView?.() ?? null;
-    const startView = readView();
-    let midView: any = null;
-    let endView: any = null;
-
     const segs = keypoints.length - 1;
     const start = performance.now();
 
@@ -314,30 +303,18 @@ async function runPanToEdges(page: Page, cfg: Config): Promise<void> {
 
         dispatch('mousemove', x, y, 1);
 
-        if (!midView && t >= 0.5) {
-          midView = readView();
-        }
-
         if (t >= 1) {
           dispatch('mouseup', x, y, 0);
           // Give the app a chance to flush pending pan in the mouseup handler
           // and/or a following rAF.
-          requestAnimationFrame(() => {
-            endView = readView();
-            resolve();
-          });
+          requestAnimationFrame(() => resolve());
           return;
         }
         requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
     });
-
-    return { startView, midView, endView };
   }, { geometry: cfg.geometry, durationMs: cfg.panMs });
-
-  // Attach for later printing.
-  (runPanToEdges as any).__lastViews = panViews;
 }
 
 async function runHoverPath(page: Page, cfg: Config): Promise<void> {
@@ -407,6 +384,9 @@ async function main() {
     browser = await puppeteer.launch({
       headless: cfg.headless,
       args: [
+        // Ensure the window is large enough so the configured viewport isn't clipped in headed mode.
+        `--window-size=${cfg.width},${cfg.height}`,
+        '--window-position=0,0',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
@@ -417,19 +397,16 @@ async function main() {
     const page = await browser.newPage();
     await page.setViewport({ width: cfg.width, height: cfg.height, deviceScaleFactor: cfg.dpr });
 
+    // tsx/esbuild may wrap serialized functions passed to page.evaluate() with
+    // __name(...) calls. Define a no-op __name helper before any evaluate runs.
+    await page.evaluateOnNewDocument('globalThis.__name = (fn) => fn;');
+
     console.log('[3/4] Loading demo page...');
     await page.goto(dev.url + '/', { waitUntil: 'networkidle2', timeout: 120000 });
     await page.bringToFront();
 
-    // tsx/esbuild may wrap serialized functions passed to page.evaluate() with
-    // __name(...) calls. Define a no-op __name helper in the page to prevent
-    // ReferenceError: __name is not defined.
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (page as any).evaluateOnNewDocument('globalThis.__name = (fn) => fn;');
-    } catch {
-      await page.evaluate('globalThis.__name = (fn) => fn;');
-    }
+    // Also define it in the currently loaded document (defensive).
+    await page.evaluate('globalThis.__name = (fn) => fn;');
 
     await installFpsProbe(page);
 
@@ -437,22 +414,20 @@ async function main() {
     await setDemoControls(page, cfg);
     await maybeCaptureScreenshot(page, cfg, 'after-generate');
 
-    const viewBefore = await page.evaluate(() => (window as any).__vizDemo?.getView?.() ?? null);
-
-    const idleStats = await measurePhase(page, 'idle', async () => { await sleep(2000); });
+    // The main browser benchmarks already cover broad perf metrics; this runner
+    // focuses on perceived FPS for real demo interactions.
     const panStats = await measurePhase(page, 'panToEdges', async () => runPanToEdges(page, cfg));
     await maybeCaptureScreenshot(page, cfg, 'after-pan');
-    const viewAfterPan = await page.evaluate(() => (window as any).__vizDemo?.getView?.() ?? null);
-    const policyAfterPan = await page.evaluate(() => (window as any).__vizDemo?.getRenderer?.()?.__debugPolicy ?? null);
-    const panPhaseViews = (runPanToEdges as any).__lastViews ?? null;
     const hoverStats = await measurePhase(page, 'hover', async () => runHoverPath(page, cfg));
     await maybeCaptureScreenshot(page, cfg, 'after-hover');
-    const viewAfterHover = await page.evaluate(() => (window as any).__vizDemo?.getView?.() ?? null);
-    const policyAfterHover = await page.evaluate(() => (window as any).__vizDemo?.getRenderer?.()?.__debugPolicy ?? null);
 
     const sys = await page.evaluate(() => ({
       userAgent: navigator.userAgent,
       devicePixelRatio: window.devicePixelRatio,
+      inner: { width: window.innerWidth, height: window.innerHeight },
+      visualViewport: (window as any).visualViewport
+        ? { width: (window as any).visualViewport.width, height: (window as any).visualViewport.height, scale: (window as any).visualViewport.scale }
+        : null,
       canvas: (() => {
         const c = document.getElementById('canvas') as HTMLCanvasElement | null;
         if (!c) return null;
@@ -475,19 +450,15 @@ async function main() {
     console.log('════════════════════════════════════════════════════════════════════');
     console.log(`UserAgent: ${String(sys.userAgent).slice(0, 90)}...`);
     console.log(`Window DPR: ${sys.devicePixelRatio}`);
+    console.log(`Inner viewport: ${sys.inner?.width}x${sys.inner?.height}`);
+    if (sys.visualViewport) {
+      console.log(`VisualViewport: ${sys.visualViewport.width}x${sys.visualViewport.height} (scale ${sys.visualViewport.scale})`);
+    }
     console.log(`Canvas: css=${sys.canvas?.cssWidth}x${sys.canvas?.cssHeight}, buffer=${sys.canvas?.bufWidth}x${sys.canvas?.bufHeight}`);
     console.log(`Demo statFrameTime: ${sys.statFrameTime}`);
     console.log('────────────────────────────────────────────────────────────────────');
-    console.log(pretty(idleStats));
     console.log(pretty(panStats));
     console.log(pretty(hoverStats));
-    console.log('────────────────────────────────────────────────────────────────────');
-    console.log('View before pan:', JSON.stringify(viewBefore));
-    console.log('View after pan:', JSON.stringify(viewAfterPan));
-    console.log('Policy after pan:', JSON.stringify(policyAfterPan));
-    console.log('Pan phase views:', JSON.stringify(panPhaseViews));
-    console.log('View after hover:', JSON.stringify(viewAfterHover));
-    console.log('Policy after hover:', JSON.stringify(policyAfterHover));
     console.log('════════════════════════════════════════════════════════════════════');
     console.log('');
   } finally {

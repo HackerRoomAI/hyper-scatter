@@ -16,7 +16,7 @@ import {
   HyperbolicViewState,
   Modifiers,
 } from '../core/types.js';
-import { arraysApproxEqual, setsEqual } from './utils.js';
+import { arraysApproxEqual } from './utils.js';
 
 // ============================================================================
 // Types
@@ -382,27 +382,72 @@ export function compareHitTest(
 
 /**
  * Compare lasso selection results.
+ * Uses the has() method for membership verification, allowing implementations
+ * to return either indices or geometry-based selections.
  */
 export function compareLassoSelect(
   refRenderer: Renderer,
   candidateRenderer: Renderer,
-  polyline: Float32Array
+  polyline: Float32Array,
+  n: number,
+  positions?: Float32Array,
+  testName?: string
 ): OperationResult {
   const refResult = refRenderer.lassoSelect(polyline);
   const candResult = candidateRenderer.lassoSelect(polyline);
 
-  const passed = setsEqual(refResult.indices, candResult.indices);
+  // Verify membership for all points using has()
+  // Collect up to MAX_SAMPLE mismatches for detailed reporting
+  const MAX_SAMPLE = 5;
+  const mismatches: Array<{ index: number; inRef: boolean; inCand: boolean }> = [];
+  let mismatchCount = 0;
+  let refCount = 0;
+  let candCount = 0;
+
+  for (let i = 0; i < n; i++) {
+    const inRef = refResult.has(i);
+    const inCand = candResult.has(i);
+    if (inRef) refCount++;
+    if (inCand) candCount++;
+    if (inRef !== inCand) {
+      mismatchCount++;
+      if (mismatches.length < MAX_SAMPLE) {
+        mismatches.push({ index: i, inRef, inCand });
+      }
+    }
+  }
+
+  const passed = mismatchCount === 0;
+
+  // Build detailed error message
+  let details: string | undefined;
+  if (!passed) {
+    const lines: string[] = [
+      `ref=${refCount} points, cand=${candCount} points (${mismatchCount} mismatches)`,
+    ];
+    for (const m of mismatches) {
+      let coordStr = '';
+      if (positions) {
+        const x = positions[m.index * 2];
+        const y = positions[m.index * 2 + 1];
+        coordStr = ` at (${x.toFixed(6)}, ${y.toFixed(6)})`;
+      }
+      lines.push(`  #${m.index}${coordStr}: ref=${m.inRef}, cand=${m.inCand}`);
+    }
+    if (mismatchCount > MAX_SAMPLE) {
+      lines.push(`  ... and ${mismatchCount - MAX_SAMPLE} more`);
+    }
+    details = lines.join('\n');
+  }
 
   return {
-    operation: 'lassoSelect',
-    params: { polylineLength: polyline.length / 2 },
-    reference: { count: refResult.indices.size } as any,
-    candidate: { count: candResult.indices.size } as any,
-    maxError: passed ? 0 : Math.abs(refResult.indices.size - candResult.indices.size),
+    operation: testName ? `lassoSelect[${testName}]` : 'lassoSelect',
+    params: { polylineLength: polyline.length / 2, testName },
+    reference: { count: refCount } as any,
+    candidate: { count: candCount } as any,
+    maxError: passed ? 0 : mismatchCount,
     passed,
-    details: passed
-      ? undefined
-      : `ref=${refResult.indices.size} points vs cand=${candResult.indices.size} points`,
+    details,
   };
 }
 
@@ -574,18 +619,128 @@ export function runAccuracyTests(
     { x: (width * 3) / 4, y: (height * 3) / 4 },
   ];
 
+  // Hyperbolic edge case: cursor slightly outside the disk boundary.
+  // Reference hitTest does NOT require the cursor to be inside the disk; it
+  // only culls points whose projected positions are outside the disk.
+  //
+  // To make this deterministic (and likely to produce a hit), we:
+  // 1) Find the dataset point whose *projected* position is closest to the disk boundary.
+  // 2) Test hitTest at that point's screen position (should hit itself).
+  // 3) Move the cursor just outside the disk along the radial direction while
+  //    still within typical hit radius.
+  if (geometry === 'poincare') {
+    const v = initialView as HyperbolicViewState;
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const diskRadius = Math.min(width, height) * 0.45 * v.displayZoom;
+
+    let bestI = 0;
+    let bestR = -Infinity;
+    for (let i = 0; i < dataset.n; i++) {
+      const dataX = dataset.positions[i * 2];
+      const dataY = dataset.positions[i * 2 + 1];
+      const s = refRenderer.projectToScreen(dataX, dataY);
+      const dx = s.x - centerX;
+      const dy = s.y - centerY;
+      const r = Math.hypot(dx, dy);
+      if (r > bestR) {
+        bestR = r;
+        bestI = i;
+      }
+    }
+
+    const bx = dataset.positions[bestI * 2];
+    const by = dataset.positions[bestI * 2 + 1];
+    const bScreen = refRenderer.projectToScreen(bx, by);
+
+    // Inside hit: should reliably pick bestI.
+    hitTestPositions.push({ x: bScreen.x, y: bScreen.y });
+
+    // Outside hit: move to just outside the disk boundary along the radial direction.
+    const dx = bScreen.x - centerX;
+    const dy = bScreen.y - centerY;
+    const r = Math.max(1e-9, Math.hypot(dx, dy));
+    // Put cursor 1 CSS px outside disk.
+    const needed = (diskRadius + 1) - r;
+    // If the best point isn't near the boundary for some reason, this may move
+    // too far and result in a null hit for both implementations (still fine).
+    const outX = bScreen.x + (dx / r) * needed;
+    const outY = bScreen.y + (dy / r) * needed;
+    hitTestPositions.push({ x: outX, y: outY });
+  }
+
   for (const pos of hitTestPositions) {
     tests.push(compareHitTest(refRenderer, candidateRenderer, pos.x, pos.y));
   }
 
-  // Test 8: Lasso selection
-  const testPolygon = new Float32Array([
-    width * 0.3, height * 0.3,
-    width * 0.7, height * 0.3,
-    width * 0.7, height * 0.7,
-    width * 0.3, height * 0.7,
-  ]);
-  tests.push(compareLassoSelect(refRenderer, candidateRenderer, testPolygon));
+  // Test 8: Lasso selection with multiple polygons
+  // Each polygon tests different aspects of the selection algorithm
+  const lassoTests: Array<{ name: string; coords: number[] }> = [
+    // Centered large square (40%) - original test, covers many points
+    {
+      name: 'center-large',
+      coords: [0.3, 0.3, 0.7, 0.3, 0.7, 0.7, 0.3, 0.7],
+    },
+    // Small centered square (10%) - tests precision with fewer points
+    {
+      name: 'center-small',
+      coords: [0.45, 0.45, 0.55, 0.45, 0.55, 0.55, 0.45, 0.55],
+    },
+    // Off-center: top-left corner
+    {
+      name: 'top-left',
+      coords: [0.05, 0.05, 0.25, 0.05, 0.25, 0.25, 0.05, 0.25],
+    },
+    // Off-center: bottom-right corner
+    {
+      name: 'bottom-right',
+      coords: [0.75, 0.75, 0.95, 0.75, 0.95, 0.95, 0.75, 0.95],
+    },
+    // Triangle - tests non-rectangular shapes
+    {
+      name: 'triangle',
+      coords: [0.5, 0.2, 0.8, 0.7, 0.2, 0.7],
+    },
+    // Concave polygon (arrow/chevron) - tests winding/ray-casting edge cases
+    {
+      name: 'concave',
+      coords: [0.3, 0.3, 0.5, 0.45, 0.7, 0.3, 0.7, 0.7, 0.3, 0.7],
+    },
+    // Thin horizontal strip - tests elongated shapes
+    {
+      name: 'thin-horizontal',
+      coords: [0.1, 0.48, 0.9, 0.48, 0.9, 0.52, 0.1, 0.52],
+    },
+  ];
+
+  // Add hyperbolic-specific tests
+  if (geometry === 'poincare') {
+    // For hyperbolic, also test near the disk boundary
+    // The disk is centered at (0.5, 0.5) in normalized coords with radius ~0.45
+    lassoTests.push({
+      name: 'near-boundary',
+      coords: [0.7, 0.4, 0.9, 0.4, 0.9, 0.6, 0.7, 0.6],
+    });
+    // Polygon crossing through the disk center
+    lassoTests.push({
+      name: 'through-center',
+      coords: [0.2, 0.4, 0.8, 0.4, 0.8, 0.6, 0.2, 0.6],
+    });
+  }
+
+  for (const test of lassoTests) {
+    const polygon = new Float32Array(
+      test.coords.map((v, i) => (i % 2 === 0 ? v * width : v * height))
+    );
+    tests.push(compareLassoSelect(
+      refRenderer,
+      candidateRenderer,
+      polygon,
+      dataset.n,
+      dataset.positions,
+      test.name
+    ));
+  }
 
   // Generate report
   const allPassed = tests.every(t => t.passed);

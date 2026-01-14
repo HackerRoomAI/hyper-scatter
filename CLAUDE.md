@@ -10,6 +10,10 @@ If you are implementing an optimized **candidate** renderer, the most relevant s
 
 Benchmarks are primarily run via the CLI (often headless/automated), not manually in the browser UI.
 
+The **demo page should match the benchmarked implementation closely**, so the interactive user experience reflects what is actually being measured (same renderer mode, interaction paths, and key rendering/quality policies where applicable). If the demo intentionally differs (e.g. extra UI features), document the differences explicitly.
+
+To avoid drift, the **demo and benchmark paths should share as much code as possible** via shared modules (core math, interaction semantics, dataset generation, rendering policy knobs, etc.), rather than duplicating logic in multiple entrypoints.
+
 The harness must include (and you must keep up to date) simple, reliable instructions for engineers to run accuracy tests and benchmarks.
 
 ---

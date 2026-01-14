@@ -50,9 +50,12 @@ import {
   Modifiers,
   HitResult,
   SelectionResult,
+  SelectionGeometry,
   DEFAULT_COLORS,
   SELECTION_COLOR,
   HOVER_COLOR,
+  createIndicesSelectionResult,
+  createGeometrySelectionResult,
 } from '../core/types.js';
 
 import {
@@ -75,6 +78,8 @@ import {
   UniformGridIndex,
   lassoSelectIndexed,
 } from './spatial_index.js';
+
+import { pointInPolygon } from '../core/selection/point_in_polygon.js';
 
 // ============================================================================
 // Small helpers
@@ -1356,21 +1361,21 @@ abstract class WebGLRendererBase implements Renderer {
         return;
       }
 
-      // Too many selected points: skip uploading an overlay to avoid OOM.
-      if (count > MAX_RENDER_SELECTION) {
-        this.selectionDirty = false;
-        return;
-      }
-
-      const pos = new Float32Array(count * 2);
-      const lab = new Uint16Array(count);
+      // For huge selections, render only a deterministic prefix (iteration
+      // order of Set is deterministic for a fixed construction).
+      const renderCount = Math.min(count, MAX_RENDER_SELECTION);
+      const pos = new Float32Array(renderCount * 2);
+      const lab = new Uint16Array(renderCount);
       let k = 0;
       for (const i of this.selection) {
         pos[k * 2] = ds.positions[i * 2];
         pos[k * 2 + 1] = ds.positions[i * 2 + 1];
         lab[k] = ds.labels[i];
         k++;
+        if (k >= renderCount) break;
       }
+
+      this.selectionOverlayCount = k;
 
       gl.bindVertexArray(this.selectionVao);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.selectionPosBuffer);
@@ -1386,14 +1391,21 @@ abstract class WebGLRendererBase implements Renderer {
 
     // Pack selection indices to Uint32 element buffer.
     const count = this.selection.size;
-    if (count > MAX_RENDER_SELECTION) {
-      // Skip huge selection overlays.
+    const renderCount = Math.min(count, MAX_RENDER_SELECTION);
+    this.selectionOverlayCount = renderCount;
+    if (renderCount === 0) {
       this.selectionDirty = false;
       return;
     }
-    const indices = new Uint32Array(count);
+
+    const indices = new Uint32Array(renderCount);
     let k = 0;
-    for (const i of this.selection) indices[k++] = i;
+    for (const i of this.selection) {
+      indices[k++] = i;
+      if (k >= renderCount) break;
+    }
+
+    this.selectionOverlayCount = k;
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.selectionEbo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.DYNAMIC_DRAW);
@@ -1873,9 +1885,17 @@ export class EuclideanWebGLCandidate extends WebGLRendererBase {
   lassoSelect(polyline: Float32Array): SelectionResult {
     const ds = this.dataset;
     const idx = this.dataIndex;
-    if (!ds || !idx) return { indices: new Set(), computeTimeMs: 0 };
+    if (!ds || !idx) return createIndicesSelectionResult(new Set(), 0);
 
     const startTime = performance.now();
+
+    // For very large datasets, avoid materializing a potentially multi-million
+    // index Set. Return the selection geometry in data space and rely on `has()`
+    // for membership checks (Embedding Atlas style).
+    //
+    // The harness validates lasso correctness via `SelectionResult.has()`.
+    const USE_GEOMETRY_THRESHOLD = 200_000;
+    const useGeometry = ds.n > USE_GEOMETRY_THRESHOLD;
 
     const dataPolyline = new Float32Array(polyline.length);
     for (let i = 0; i < polyline.length / 2; i++) {
@@ -1886,12 +1906,37 @@ export class EuclideanWebGLCandidate extends WebGLRendererBase {
       dataPolyline[i * 2 + 1] = data.y;
     }
 
+    if (useGeometry) {
+      // Tight AABB for fast reject in has().
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < dataPolyline.length; i += 2) {
+        const x = dataPolyline[i];
+        const y = dataPolyline[i + 1];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+
+      const geometry: SelectionGeometry = { type: 'polygon', coords: dataPolyline };
+      const computeTimeMs = performance.now() - startTime;
+      return createGeometrySelectionResult(
+        geometry,
+        ds.positions,
+        computeTimeMs,
+        (px, py, polygon) => {
+          if (px < minX || px > maxX || py < minY || py > maxY) return false;
+          return pointInPolygon(px, py, polygon);
+        }
+      );
+    }
+
     const indices = lassoSelectIndexed(ds.positions, dataPolyline, idx);
 
-    return {
-      indices,
-      computeTimeMs: performance.now() - startTime,
-    };
+    return createIndicesSelectionResult(indices, performance.now() - startTime);
   }
 
   projectToScreen(dataX: number, dataY: number): { x: number; y: number } {
@@ -2077,14 +2122,18 @@ export class HyperbolicWebGLCandidate extends WebGLRendererBase {
     const diskRadius = Math.min(width, height) * 0.45 * view.displayZoom;
     const diskR2 = diskRadius * diskRadius;
 
-    // Match render() culling: ignore points outside the displayed disk.
-    // (If the cursor is outside the disk, it's fine to just return null quickly.)
+    const maxDistPx = this.pointRadiusCss + 5;
+    const maxDistSq = maxDistPx * maxDistPx;
+
+    // Reference semantics: cursor may be outside the disk. We only cull points
+    // based on their *projected* position being outside the disk.
+    //
+    // However, if the cursor is far enough outside the disk that no point
+    // inside the disk could be within the hit radius, we can return null.
     const dxCur = screenX - centerX;
     const dyCur = screenY - centerY;
-    if (dxCur * dxCur + dyCur * dyCur > diskR2) return null;
-
-    const maxDistSq = (this.pointRadiusCss + 5) ** 2;
-    const maxDistPx = this.pointRadiusCss + 5;
+    const maxCursorR = diskRadius + maxDistPx;
+    if (dxCur * dxCur + dyCur * dyCur > maxCursorR * maxCursorR) return null;
 
     // Convert cursor to data space.
     const dataPt = unprojectPoincare(screenX, screenY, view, width, height);
@@ -2211,9 +2260,14 @@ export class HyperbolicWebGLCandidate extends WebGLRendererBase {
   lassoSelect(polyline: Float32Array): SelectionResult {
     const ds = this.dataset;
     const idx = this.dataIndex;
-    if (!ds || !idx) return { indices: new Set(), computeTimeMs: 0 };
+    if (!ds || !idx) return createIndicesSelectionResult(new Set(), 0);
 
     const startTime = performance.now();
+
+    // Same strategy as Euclidean: for very large datasets, return geometry to
+    // avoid enumerating massive index sets. Correctness is verified via `has()`.
+    const USE_GEOMETRY_THRESHOLD = 200_000;
+    const useGeometry = ds.n > USE_GEOMETRY_THRESHOLD;
 
     const dataPolyline = new Float32Array(polyline.length);
     for (let i = 0; i < polyline.length / 2; i++) {
@@ -2224,12 +2278,37 @@ export class HyperbolicWebGLCandidate extends WebGLRendererBase {
       dataPolyline[i * 2 + 1] = data.y;
     }
 
+    if (useGeometry) {
+      // Tight AABB for fast reject in has().
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < dataPolyline.length; i += 2) {
+        const x = dataPolyline[i];
+        const y = dataPolyline[i + 1];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+
+      const geometry: SelectionGeometry = { type: 'polygon', coords: dataPolyline };
+      const computeTimeMs = performance.now() - startTime;
+      return createGeometrySelectionResult(
+        geometry,
+        ds.positions,
+        computeTimeMs,
+        (px, py, polygon) => {
+          if (px < minX || px > maxX || py < minY || py > maxY) return false;
+          return pointInPolygon(px, py, polygon);
+        }
+      );
+    }
+
     const indices = lassoSelectIndexed(ds.positions, dataPolyline, idx);
 
-    return {
-      indices,
-      computeTimeMs: performance.now() - startTime,
-    };
+    return createIndicesSelectionResult(indices, performance.now() - startTime);
   }
 
   projectToScreen(dataX: number, dataY: number): { x: number; y: number } {
