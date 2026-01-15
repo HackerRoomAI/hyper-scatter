@@ -50,7 +50,12 @@ export class HyperbolicReference implements Renderer {
 
   private pointRadius = 3;
   private colors = DEFAULT_COLORS;
-  private backgroundColor = '#1a1a2e';
+  private backgroundColor = '#0a0a0a';
+  private poincareDiskFillColor = '#141414';
+  private poincareDiskBorderColor = '#666666';
+  private poincareGridColor = '#2a2a2a';
+  private poincareDiskBorderWidthPx = 2;
+  private poincareGridWidthPx = 0.5;
 
   init(canvas: HTMLCanvasElement, opts: InitOptions): void {
     this.canvas = canvas;
@@ -65,6 +70,15 @@ export class HyperbolicReference implements Renderer {
     if (opts.backgroundColor) this.backgroundColor = opts.backgroundColor;
     if (opts.pointRadius) this.pointRadius = opts.pointRadius;
     if (opts.colors) this.colors = opts.colors;
+    if (opts.poincareDiskFillColor) this.poincareDiskFillColor = opts.poincareDiskFillColor;
+    if (opts.poincareDiskBorderColor) this.poincareDiskBorderColor = opts.poincareDiskBorderColor;
+    if (opts.poincareGridColor) this.poincareGridColor = opts.poincareGridColor;
+    if (typeof opts.poincareDiskBorderWidthPx === 'number' && Number.isFinite(opts.poincareDiskBorderWidthPx)) {
+      this.poincareDiskBorderWidthPx = Math.max(0, opts.poincareDiskBorderWidthPx);
+    }
+    if (typeof opts.poincareGridWidthPx === 'number' && Number.isFinite(opts.poincareGridWidthPx)) {
+      this.poincareGridWidthPx = Math.max(0, opts.poincareGridWidthPx);
+    }
 
     // Set canvas size
     canvas.width = this.width * this.dpr;
@@ -128,14 +142,14 @@ export class HyperbolicReference implements Renderer {
     const centerY = height / 2;
 
     // Disk background (slightly lighter)
-    ctx.fillStyle = '#252542';
+    ctx.fillStyle = this.poincareDiskFillColor;
     ctx.beginPath();
     ctx.arc(centerX, centerY, diskRadius, 0, Math.PI * 2);
     ctx.fill();
 
     // Disk border
-    ctx.strokeStyle = '#4a4a6a';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = this.poincareDiskBorderColor;
+    ctx.lineWidth = this.poincareDiskBorderWidthPx;
     ctx.beginPath();
     ctx.arc(centerX, centerY, diskRadius, 0, Math.PI * 2);
     ctx.stroke();
@@ -213,8 +227,8 @@ export class HyperbolicReference implements Renderer {
     centerY: number,
     diskRadius: number
   ): void {
-    ctx.strokeStyle = '#3a3a5a';
-    ctx.lineWidth = 0.5;
+    ctx.strokeStyle = this.poincareGridColor;
+    ctx.lineWidth = this.poincareGridWidthPx;
 
     // Draw radial lines (geodesics through origin after camera transform)
     const numRadial = 8;

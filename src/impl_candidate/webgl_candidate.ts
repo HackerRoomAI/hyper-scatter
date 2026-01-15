@@ -527,17 +527,13 @@ abstract class WebGLRendererBase implements Renderer {
 
   protected pointRadiusCss = 3;
   protected colors: string[] = DEFAULT_COLORS;
-  protected backgroundColor = '#1a1a2e';
+  protected backgroundColor = '#0a0a0a';
 
-  // Hyperbolic backdrop styling (Poincaré disk). Defaults match the reference-ish demo.
-  // NOTE: Defaults intentionally avoid a hardcoded "purple theme" so consumers
-  // (e.g. HyperView) don't need to override multiple knobs just to get a
-  // consistent background.
-  // - fill defaults to the same value as backgroundColor (set in init())
-  // - border/grid default to neutral light tones (override per app)
-  protected poincareDiskFillColor = this.backgroundColor;
-  protected poincareDiskBorderColor = '#ffffff';
-  protected poincareGridColor = '#ffffff33';
+  // Hyperbolic backdrop styling (Poincaré disk). Neutral grayscale defaults.
+  // Override per app via InitOptions as needed.
+  protected poincareDiskFillColor = '#141414';
+  protected poincareDiskBorderColor = '#666666';
+  protected poincareGridColor = '#66666633';
   protected poincareDiskBorderWidthPx = 2;
   protected poincareGridWidthPx = 0.5;
 
@@ -756,17 +752,16 @@ abstract class WebGLRendererBase implements Renderer {
     this.canvasDpr = this.deviceDpr;
     this.dpr = this.deviceDpr;
 
-    const hasDiskFillOverride = !!opts.poincareDiskFillColor;
+    const hasDiskFillOverride = typeof opts.poincareDiskFillColor === 'string';
     if (opts.backgroundColor) this.backgroundColor = opts.backgroundColor;
     if (opts.pointRadius) this.pointRadiusCss = opts.pointRadius;
     if (opts.colors) this.colors = opts.colors;
 
     // Optional per-app styling for hyperbolic disk/grid.
-    // If the app did not specify a disk fill, keep it consistent with the
-    // global background color.
+    // If the app did not specify a disk fill, keep the neutral default.
     this.poincareDiskFillColor = hasDiskFillOverride
       ? opts.poincareDiskFillColor!
-      : this.backgroundColor;
+      : this.poincareDiskFillColor;
     if (opts.poincareDiskBorderColor) this.poincareDiskBorderColor = opts.poincareDiskBorderColor;
     if (opts.poincareGridColor) this.poincareGridColor = opts.poincareGridColor;
     if (typeof opts.poincareDiskBorderWidthPx === 'number' && Number.isFinite(opts.poincareDiskBorderWidthPx)) {

@@ -6,3 +6,6 @@ dist-lib/
 *.tgz
 .DS_Store
 research/
+scripts/
+docs/
+.playwright-mcp/

@@ -4,7 +4,7 @@
  */
 
 import { Dataset, GeometryMode, Renderer, InteractionMode, Modifiers, SelectionResult } from '../core/types.js';
-import { generateDataset } from '../core/dataset.js';
+import { generateDataset, type DatasetDistribution } from '../core/dataset.js';
 import { EuclideanReference } from '../impl_reference/euclidean_reference.js';
 import { HyperbolicReference } from '../impl_reference/hyperbolic_reference.js';
 import { EuclideanWebGLCandidate, HyperbolicWebGLCandidate } from '../impl_candidate/webgl_candidate.js';
@@ -16,14 +16,16 @@ type RendererType = 'webgl' | 'reference';
 let canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const overlayCanvas = document.getElementById('overlayCanvas') as HTMLCanvasElement;
 const canvasBody = document.getElementById('canvasBody') as HTMLDivElement;
-const canvasHeader = document.getElementById('canvasHeader') as HTMLDivElement;
-const rendererSelect = document.getElementById('renderer') as HTMLSelectElement;
-const geometrySelect = document.getElementById('geometry') as HTMLSelectElement;
-const numPointsSelect = document.getElementById('numPoints') as HTMLSelectElement;
+const canvasHeader = document.getElementById('canvasHeader') as HTMLSpanElement;
+const rendererInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="renderer"]'));
+const geometryInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="geometry"]'));
+const numPointsInput = document.getElementById('numPoints') as HTMLInputElement;
+const numPointsLabel = document.getElementById('numPointsLabel') as HTMLSpanElement;
+const datasetModeSelect = document.getElementById('datasetMode') as HTMLSelectElement;
 const labelCountInput = document.getElementById('labelCount') as HTMLInputElement;
+const labelCountLabel = document.getElementById('labelCountLabel') as HTMLSpanElement | null;
 const seedInput = document.getElementById('seed') as HTMLInputElement;
-const generateBtn = document.getElementById('generateBtn') as HTMLButtonElement;
-const modeIndicator = document.getElementById('modeIndicator') as HTMLDivElement;
+const modeIndicator = document.getElementById('modeIndicator') as HTMLSpanElement;
 
 // Stats elements
 const statPoints = document.getElementById('statPoints') as HTMLSpanElement;
@@ -35,9 +37,24 @@ const statLassoTime = document.getElementById('statLassoTime') as HTMLSpanElemen
 // State
 let renderer: Renderer | null = null;
 let dataset: Dataset | null = null;
+let lastDatasetKey = '';
 let currentGeometry: GeometryMode = 'euclidean';
 let currentRendererType: RendererType = 'webgl';
 let mode: InteractionMode = 'pan';
+
+const POINT_PRESETS = [
+  1_000,
+  10_000,
+  50_000,
+  100_000,
+  250_000,
+  500_000,
+  1_000_000,
+  2_000_000,
+  5_000_000,
+  10_000_000,
+  20_000_000,
+];
 
 // Interaction state
 let isDragging = false;
@@ -169,6 +186,29 @@ function replaceCanvas(): HTMLCanvasElement {
 }
 
 /**
+ * Read theme-aware visualization colors from CSS custom properties.
+ */
+function getVizThemeColors(): {
+  backgroundColor: string;
+  diskFillColor: string;
+  diskBorderColor: string;
+  gridColor: string;
+} {
+  const styles = getComputedStyle(document.documentElement);
+  const pick = (name: string, fallback: string) => {
+    const value = styles.getPropertyValue(name).trim();
+    return value || fallback;
+  };
+
+  return {
+    backgroundColor: pick('--viz-bg', '#13171f'),
+    diskFillColor: pick('--viz-disk', '#1b2230'),
+    diskBorderColor: pick('--viz-border', '#6b7280'),
+    gridColor: pick('--viz-grid', '#2b334266'),
+  };
+}
+
+/**
  * Initialize the renderer based on geometry and renderer type.
  */
 function initRenderer(geometry: GeometryMode, rendererType: RendererType): void {
@@ -199,20 +239,25 @@ function initRenderer(geometry: GeometryMode, rendererType: RendererType): void 
     } else {
       renderer = new HyperbolicWebGLCandidate();
     }
-    canvasHeader.textContent = 'WebGL Renderer';
+    canvasHeader.textContent = 'WebGL';
   } else {
     if (geometry === 'euclidean') {
       renderer = new EuclideanReference();
     } else {
       renderer = new HyperbolicReference();
     }
-    canvasHeader.textContent = 'Reference (Canvas2D)';
+    canvasHeader.textContent = 'Reference';
   }
 
+  const theme = getVizThemeColors();
   renderer.init(canvas, {
     width,
     height,
     devicePixelRatio: window.devicePixelRatio,
+    backgroundColor: theme.backgroundColor,
+    poincareDiskFillColor: theme.diskFillColor,
+    poincareDiskBorderColor: theme.diskBorderColor,
+    poincareGridColor: theme.gridColor,
   });
 
   currentGeometry = geometry;
@@ -234,23 +279,57 @@ function resizeOverlay(width: number, height: number): void {
   ctx.clearRect(0, 0, width, height);
 }
 
+function getSelectedGeometry(): GeometryMode {
+  const el = document.querySelector<HTMLInputElement>('input[name="geometry"]:checked');
+  return (el?.value as GeometryMode) ?? 'euclidean';
+}
+
+function getSelectedRendererType(): RendererType {
+  const el = document.querySelector<HTMLInputElement>('input[name="renderer"]:checked');
+  return (el?.value as RendererType) ?? 'webgl';
+}
+
+function getSelectedDatasetDistribution(): DatasetDistribution {
+  return (datasetModeSelect?.value as DatasetDistribution) ?? 'default';
+}
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000) return `${n / 1_000_000}M`;
+  if (n >= 1_000) return `${n / 1_000}K`;
+  return `${n}`;
+}
+
+function getPointCount(): number {
+  const i = Math.max(0, Math.min(POINT_PRESETS.length - 1, parseInt(numPointsInput.value, 10) || 0));
+  return POINT_PRESETS[i];
+}
+
+function syncPointLabel(): void {
+  numPointsLabel.textContent = formatCount(getPointCount());
+}
+
+let generateTimer: number | null = null;
+function scheduleGenerateAndLoad(): void {
+  if (generateTimer !== null) window.clearTimeout(generateTimer);
+  generateTimer = window.setTimeout(() => {
+    generateTimer = null;
+    generateAndLoad();
+  }, 150);
+}
+
 /**
  * Generate and load a new dataset.
  */
 function generateAndLoad(): void {
-  const rendererType = rendererSelect.value as RendererType;
-  const geometry = geometrySelect.value as GeometryMode;
-  const n = parseInt(numPointsSelect.value, 10);
+  const rendererType = getSelectedRendererType();
+  const geometry = getSelectedGeometry();
+  const n = getPointCount();
   const labelCount = parseInt(labelCountInput.value, 10);
   const seed = parseInt(seedInput.value, 10);
+  const distribution = getSelectedDatasetDistribution();
 
-  // Generate dataset
-  dataset = generateDataset({
-    seed,
-    n,
-    labelCount,
-    geometry,
-  });
+  const datasetKey = `${geometry}/${distribution}/${n}/${labelCount}/${seed}`;
+  const needsNewDataset = !dataset || datasetKey !== lastDatasetKey;
 
   // Cancel any in-flight selection job.
   selectionJobId++;
@@ -260,13 +339,28 @@ function generateAndLoad(): void {
     initRenderer(geometry, rendererType);
   }
 
+  // Generate dataset only if inputs changed.
+  if (needsNewDataset) {
+    dataset = generateDataset({
+      seed,
+      n,
+      labelCount,
+      geometry,
+      distribution,
+    });
+    lastDatasetKey = datasetKey;
+  }
+
   // Load dataset
-  renderer!.setDataset(dataset);
+  renderer!.setDataset(dataset!);
 
   // Update stats
   statPoints.textContent = n.toLocaleString();
   statSelected.textContent = '0';
   statHovered.textContent = '-';
+  statFrameTime.textContent = '—';
+  statFrameTime.style.color = '';
+  statLassoTime.textContent = '—';
   frameTimes.length = 0; // Reset frame time tracking
   frameIntervals.length = 0;
   lastRafTs = 0;
@@ -359,7 +453,8 @@ function render(): void {
     const avgCpuMs = frameTimes.reduce((a, b) => a + b, 0) / Math.max(1, frameTimes.length);
     const avgIntervalMs = frameIntervals.reduce((a, b) => a + b, 0) / Math.max(1, frameIntervals.length);
     const fps = avgIntervalMs > 1e-6 ? (1000 / avgIntervalMs) : 0;
-    statFrameTime.textContent = `${avgIntervalMs.toFixed(2)}ms (${fps.toFixed(1)} FPS, cpu ${avgCpuMs.toFixed(2)}ms)`;
+    statFrameTime.textContent = `fps ${fps.toFixed(1)} · cpu ${avgCpuMs.toFixed(2)}ms`;
+    statFrameTime.style.color = fps >= 50 ? '#8b8' : '#b66';
   }
 
   // Draw lasso only while actively drawing.
@@ -405,7 +500,7 @@ function drawLassoScreen(polyline: Float32Array): void {
 
   if (polyline.length < 6) return;
 
-  ctx.strokeStyle = '#ff66aa';
+  ctx.strokeStyle = '#cccccc';
   ctx.lineWidth = 2;
   ctx.setLineDash([5, 5]);
   ctx.beginPath();
@@ -416,7 +511,7 @@ function drawLassoScreen(polyline: Float32Array): void {
   ctx.closePath();
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(255, 102, 170, 0.10)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
   ctx.fill();
 }
 
@@ -438,7 +533,7 @@ function drawLassoData(polygonData: Float32Array): void {
  */
 function updateModeIndicator(): void {
   modeIndicator.textContent = mode.toUpperCase();
-  modeIndicator.className = `mode-indicator ${mode}`;
+  modeIndicator.className = `mode ${mode}`;
 }
 
 // === Event Handlers ===
@@ -658,11 +753,39 @@ canvas.addEventListener('wheel', handleWheel, { passive: false });
 canvas.addEventListener('dblclick', handleDoubleClick);
 window.addEventListener('resize', handleResize);
 
-generateBtn.addEventListener('click', generateAndLoad);
-geometrySelect.addEventListener('change', generateAndLoad);
-rendererSelect.addEventListener('change', generateAndLoad);
+for (const el of geometryInputs) el.addEventListener('change', scheduleGenerateAndLoad);
+for (const el of rendererInputs) el.addEventListener('change', scheduleGenerateAndLoad);
+datasetModeSelect.addEventListener('change', scheduleGenerateAndLoad);
+numPointsInput.addEventListener('input', () => {
+  syncPointLabel();
+  scheduleGenerateAndLoad();
+});
+numPointsInput.addEventListener('change', () => {
+  syncPointLabel();
+  scheduleGenerateAndLoad();
+});
+labelCountInput.addEventListener('input', () => {
+  if (labelCountLabel) labelCountLabel.textContent = labelCountInput.value;
+  scheduleGenerateAndLoad();
+});
+labelCountInput.addEventListener('change', () => {
+  if (labelCountLabel) labelCountLabel.textContent = labelCountInput.value;
+  scheduleGenerateAndLoad();
+});
+seedInput.addEventListener('change', scheduleGenerateAndLoad);
+
+// Re-init renderer when color scheme changes
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (renderer) {
+    initRenderer(currentGeometry, currentRendererType);
+    if (dataset) renderer.setDataset(dataset);
+    requestRender();
+  }
+});
 
 // Initial generation
+syncPointLabel();
+if (labelCountLabel) labelCountLabel.textContent = labelCountInput.value;
 generateAndLoad();
 
 console.log('Viz Lab initialized');

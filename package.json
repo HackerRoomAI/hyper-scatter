@@ -1,7 +1,28 @@
 {
   "name": "hyper-scatter",
   "version": "0.1.0",
-  "description": "High-performance scatter plot renderer for Euclidean and hyperbolic embeddings",
+  "description": "High-performance WebGL scatter plot renderer for Euclidean, Hyperbolic, and non-Euclidean embeddings.",
+  "keywords": [
+    "webgl",
+    "scatterplot",
+    "visualization",
+    "hyperbolic",
+    "poincare",
+    "data-visualization",
+    "webgl2",
+    "embedding",
+    "performance"
+  ],
+  "author": "Matin Mahmood <https://twitter.com/MatinMnM>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HackerRoomAI/hyper-scatter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HackerRoomAI/hyper-scatter/issues"
+  },
+  "homepage": "https://github.com/HackerRoomAI/hyper-scatter#readme",
   "type": "module",
   "sideEffects": false,
   "exports": {

@@ -43,7 +43,7 @@ export class EuclideanReference implements Renderer {
 
   private pointRadius = 3;
   private colors = DEFAULT_COLORS;
-  private backgroundColor = '#1a1a2e';
+  private backgroundColor = '#0a0a0a';
 
   init(canvas: HTMLCanvasElement, opts: InitOptions): void {
     this.canvas = canvas;

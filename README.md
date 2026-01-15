@@ -1,267 +1,148 @@
 # hyper-scatter
 
-A correctness + performance lab for high-performance embedding scatterplots supporting both **Euclidean** and **Hyperbolic (Poincaré disk)** geometries.
+<!-- badges -->
+[![npm version](https://img.shields.io/npm/v/hyper-scatter.svg?style=flat-square)](https://www.npmjs.com/package/hyper-scatter)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-**Target:** 20 million points at 60 FPS with geometry-aware interactions.
+**Hyperbolic (Poincaré) embeddings at 60 FPS. 20,000,000 points. Pure WebGL2 (no `regl`, no `three.js`).**
 
-![Poincaré disk visualization](https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/Uniform_tiling_73-t2.png/240px-Uniform_tiling_73-t2.png)
+<p align="center">
+  <img src="docs/poincare_demo.gif" alt="Poincaré Disk Demo" width="480">
+  <br>
+  <em>Hyperbolic pan & zoom in the Poincaré disk — points follow geodesics</em>
+</p>
 
-## Why This Exists
+A specialized scatterplot engine for [HyperView](https://github.com/HackerRoomAI/HyperView).
 
-Embedding visualizations (t-SNE, UMAP, etc.) commonly use Euclidean 2D scatterplots. But some embeddings—especially hierarchical or tree-like data—are better represented in **hyperbolic space**, where the Poincaré disk model can display exponentially more information near the boundary.
+- Geometries: **Poincaré (hyperbolic)** + **Euclidean** today; **Spherical (S²)** is a good future contribution.
+- Correctness: a slow CPU **Reference** defines semantics; the fast GPU **Candidate** must match.
+- Implementation: **pure WebGL2** (no `regl`, no `three.js`, no runtime deps).
 
-The challenge: hyperbolic geometry requires different math for camera navigation, hit-testing, and selection. Getting it wrong produces subtle bugs. Getting it fast requires GPU acceleration. This lab lets us do both.
+---
 
-## The Reference/Candidate Methodology
+## Poincaré (Hyperbolic) semantics
 
-We develop renderers using a **two-implementation strategy**:
+This is the part most scatterplot libs don’t have.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     REFERENCE                               │
-│  • Canvas2D (CPU)                                           │
-│  • Naive but correct                                        │
-│  • Ground truth for all operations                          │
-│  • Easy to read and verify                                  │
-└─────────────────────────────────────────────────────────────┘
-                          ▼
-              Accuracy tests compare behavior
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     CANDIDATE                               │
-│  • WebGL2 (GPU)                                             │
-│  • Optimized for performance                                │
-│  • Must match reference semantics exactly                   │
-│  • Uses spatial indexing, adaptive quality, etc.            │
-└─────────────────────────────────────────────────────────────┘
-```
+- **View state:** Möbius isometry parameter $a=(a_x,a_y)$ with $|a|<1$, plus a separate `displayZoom` scalar.
+- **Pan:** anchor-invariant (the point under the cursor stays under the cursor).
+- **Zoom:** anchored zoom; `displayZoom` scales the visual disk without changing the underlying isometry.
+- **Project / unproject:** stable round-trips, shared between Reference + Candidate math.
+- **Hit-test:** hyperbolic-aware, disk-culls correctly, deterministic tie-breaking.
+- **Lasso:** selection polygon is unprojected to data space; membership is verified against the Reference.
 
-### Why This Works
+For the full invariants + how the harness selects candidate code paths, see [AGENTS.md](AGENTS.md).
 
-1. **Correctness is verifiable**: Every operation (projection, pan, zoom, hit-test, lasso) can be compared against the reference.
+## Usage (copy/paste agent prompt)
 
-2. **Optimization freedom**: The candidate can use any technique (GPU shaders, spatial indexes, LOD) as long as semantics match.
+```text
+You are a coding agent working in my repository.
 
-3. **Regression detection**: Performance benchmarks track FPS over time; accuracy tests catch behavioral drift.
+Use these imports:
 
-4. **Geometry extensibility**: Adding a new geometry (e.g., spherical) means writing a new reference first, then optimizing.
+   import {
+      EuclideanWebGLCandidate,
+      HyperbolicWebGLCandidate,
+      createDataset,
+      createInteractionController,
+      type SelectionResult,
+   } from 'hyper-scatter';
 
-## Supported Geometries
+Goal:
+- Integrate `hyper-scatter` to render my embedding scatterplot.
 
-### Euclidean
-Standard 2D scatterplot with pan/zoom. Simple, fast, well-understood.
+Requirements:
+1) Install:
+   - npm: `npm install hyper-scatter`
 
-### Poincaré Disk (Hyperbolic)
-The Poincaré disk model maps the infinite hyperbolic plane onto a unit disk:
-- Points near the center appear "normal"
-- Points near the boundary are compressed (infinitely far in hyperbolic distance)
-- "Straight lines" (geodesics) are circular arcs perpendicular to the boundary
-- Camera navigation uses **Möbius transformations** to preserve angles
+2) Implement a small integration wrapper:
+    - Create `mountHyperScatter(canvas, params)` (or an idiomatic React hook).
+    - Pick renderer:
+       - if params.geometry === 'poincare' use `new HyperbolicWebGLCandidate()`
+       - else use `new EuclideanWebGLCandidate()`
+    - Ensure the canvas has a real CSS size (non-zero width/height).
+    - Init using CSS pixels:
+       - `const rect = canvas.getBoundingClientRect()`
+       - `renderer.init(canvas, { width: Math.max(1, Math.floor(rect.width)), height: Math.max(1, Math.floor(rect.height)), devicePixelRatio: window.devicePixelRatio })`
+    - Dataset:
+       - `renderer.setDataset(createDataset(params.geometry, params.positions, params.labels))`
+    - First frame:
+       - `renderer.render()`
 
-Key implementation details:
-- **Pan**: Anchor-invariant—the point under your cursor stays under your cursor
-- **Zoom**: `displayZoom` scales the visual disk without changing the hyperbolic view
-- **Hit-test**: Respects hyperbolic distances, culls points outside the visible disk
-- **Lasso**: Selection polygon is unprojected to data space for correct membership
+3) Wire interactions:
+   - Use `createInteractionController(canvas, renderer, { onHover, onLassoComplete })`.
+   - On lasso completion, keep the returned `SelectionResult` and (optionally) call:
+     - `await renderer.countSelection(result, { yieldEveryMs: 0 })` if you need an exact count without UI yielding.
 
-## Project Structure
+4) Cleanup:
+   - On unmount/destroy: `controller.destroy(); renderer.destroy();`
 
-```
-src/
-├── core/
-│   ├── math/
-│   │   ├── euclidean.ts    # Euclidean projection, pan, zoom
-│   │   └── poincare.ts     # Möbius transforms, hyperbolic math
-│   ├── types.ts            # Renderer interface, data types
-│   └── dataset.ts          # Synthetic data generation
-├── impl_reference/
-│   ├── euclidean_reference.ts   # Canvas2D Euclidean (ground truth)
-│   └── hyperbolic_reference.ts  # Canvas2D Poincaré (ground truth)
-├── impl_candidate/
-│   ├── webgl_candidate.ts       # WebGL2 renderers (optimized)
-│   └── spatial_index.ts         # Uniform grid for fast queries
-├── benchmarks/
-│   ├── accuracy.ts         # Reference vs candidate comparison
-│   ├── browser.ts          # Performance benchmarks
-│   └── run-*.ts            # CLI runners (Puppeteer)
-└── ui/
-    ├── app.ts              # Demo application
-    └── lasso_simplify.ts   # Polygon smoothing (Chaikin + RDP)
+Deliverables:
+- The concrete code changes + file paths.
+- A minimal example showing how to pass `Float32Array positions` (flat [x,y,x,y,...]) and optional `Uint16Array labels`.
 ```
 
-## Quick Start
+## Benchmarks
+
+Main claim, measured via the browser harness (headed):
+
+Config note: canvas `1125x400 @ 1x DPR` (Puppeteer).
+
+| Geometry | Points | FPS (avg) |
+|---|---:|---:|
+| Euclidean | 20,000,000 | 59.9 |
+| Poincaré | 20,000,000 | 59.9 |
+
+Run the stress benchmark that reproduces the rows above:
 
 ```bash
-# Install dependencies
-npm install
-
-# Run the interactive demo
-npm run dev
-# Open http://localhost:5173
-
-# Run accuracy tests (correctness gate)
-npm run bench:accuracy
-
-# Run performance benchmarks
-npm run bench
+npm run bench -- --points=20000000
 ```
 
-## Using in HyperView (integration notes)
+Default sweep (smaller point counts): `npm run bench`
 
-HyperView's frontend currently uses `regl-scatterplot` for its embeddings view. This repo's WebGL candidate renderers are designed to drop into that role, but there are a few integration-specific considerations.
+Note: for performance numbers, run headed (default). Headless runs can skew GPU timing.
 
-### 1) Build the reusable library output
+## How we built it
 
-This repo now ships a small library entrypoint at `src/index.ts` and a build script that emits ESM + `.d.ts` to `dist-lib/`:
+I (Matin) only knew Python. So we built this as a lab with a clear loop.
 
-```bash
-npm run build:lib
-```
+Roles:
 
-### 2) Install into HyperView's Next.js frontend
+- Matin: architect/product (Python-first).
+- Claude: harness/environment engineer (benchmarks + correctness tests + reference semantics).
+- Codex: implementation engineer (WebGL2 candidate).
 
-From `HyperView/frontend/` (the Next.js app), install this folder as a local dependency:
+### 1) Reference first
 
-```bash
-npm install ../viz_impl
-```
+- Write non-performant, readable Canvas2D renderers (`src/impl_reference/`).
+- Treat them as semantics: projection, pan/zoom, hit-test, lasso.
 
-Then you can import from the package name (`viz-lab`) rather than deep-importing internal paths.
+### 2) Harness as the reward function
 
-### 3) Key integration differences vs `regl-scatterplot`
+- Accuracy compares Reference vs Candidate for: project/unproject, pan/zoom invariance, hit-test, lasso.
+- Performance tracks: FPS, pan/hover FPS, hit-test time, lasso time.
 
-- **Hyperbolic backdrop:** `HyperbolicWebGLCandidate` renders the Poincaré disk boundary + grid **inside WebGL**.
-  - Any DOM/SVG overlay that assumes an affine view transform will not stay aligned under Möbius transforms.
-  - In HyperView, you should remove/disable the current SVG disk overlay when switching to the hyperbolic renderer.
+### 3) Candidate optimization
 
-- **Hyperbolic styling is configurable:** pass `backgroundColor`, `poincareDiskFillColor`, `poincareDiskBorderColor`, `poincareGridColor` in `InitOptions` to match your app theme.
+- Implement the WebGL2 candidate (`src/impl_candidate/`).
+- Speed comes from GPU rendering + spatial indexing + adaptive quality.
 
-- **Palette supports arbitrary label counts:** the candidate uses a small RGBA8 palette texture (no 16-uniform limit).
+### 4) Reward hacking notes
 
-- **Large-N lasso selection can return geometry:** by default (`lassoSelectionMode: 'auto'`), `lassoSelect()` may return `{ kind: 'geometry' }` for large datasets to avoid enumerating huge index sets.
-  - If HyperView needs concrete selected IDs, initialize with `lassoSelectionMode: 'indices'` (or set `lassoGeometryThreshold` higher).
+If you give an agent a benchmark, it will try to win.
 
-### 4) Interaction wiring
+- Editing the harness/tolerances instead of fixing precision.
+- Making lasso “async” so the timer looks better.
 
-The renderer contract (`src/core/types.ts`) is intentionally low-level (pan/zoom/hit/lasso), and the lab wires mouse/keyboard input in `src/ui/app.ts`.
+The harness tries to reduce these paths (example: lasso timing is end-to-end and includes the work required to get an exact selected-count).
 
-For HyperView integration, you will want a small controller layer that:
+## Status & Roadmap
 
-- attaches pointer + wheel events to the canvas
-- calls `renderer.pan(...)` / `renderer.zoom(...)`
-- uses `renderer.hitTest(...)` for hover updates
-- uses `renderer.lassoSelect(...)` for Shift+drag selection
-- schedules `renderer.render()` at most once per animation frame
-
-This keeps the renderer reusable across Next/React and avoids coupling it to the benchmark harness.
-
-If you want a ready-made controller, the library exports `createInteractionController(canvas, renderer, opts)` which wires pointer + wheel events and schedules `renderer.render()` via rAF.
-
-## Benchmark Commands
-
-### Accuracy Tests
-Compares reference (Canvas2D) vs candidate (WebGL) for correctness:
-
-```bash
-# Headed (see the browser)
-npm run bench:accuracy
-
-# Headless (CI)
-npm run bench:accuracy -- --headless
-```
-
-### Performance Benchmarks
-Measures render FPS, pan/hover FPS, hit-test time, lasso time:
-
-```bash
-# Default: WebGL candidate, all point counts
-npm run bench
-
-# Specific point counts
-npm run bench -- --points=100000,1000000,5000000
-
-# Single geometry
-npm run bench -- --geometries=poincare
-
-# Reference baseline (for comparison)
-npm run bench -- --renderer=reference
-```
-
-**Important:** Use headed (non-headless) runs for performance numbers. Headless mode can skew GPU timing.
-
-## Key Techniques
-
-### Candidate Optimizations
-
-| Technique | Purpose |
-|-----------|---------|
-| **WebGL2 point sprites** | GPU-accelerated rendering, 1 draw call for all points |
-| **Uniform grid spatial index** | O(1) average hit-test queries |
-| **Adaptive DPR** | Lower offscreen resolution during interaction |
-| **Geometry-based selection** | Return polygon + `has()` predicate instead of enumerating millions of indices |
-| **Selection overlay cap** | Render at most 50k highlighted points to avoid GPU buffer blowup |
-
-### Lasso Selection Strategy
-
-The WebGL candidate uses a uniform, geometry-first selection approach:
-
-- Return the selection polygon in **data space** with optional AABB bounds.
-- Provide `has(index)` for deterministic membership checks (used by the harness).
-- Do not require enumerating huge index sets in the browser.
-
-```typescript
-interface SelectionResult {
-  kind: 'indices' | 'geometry';
-  indices?: Set<number>;           // Optional (not required for geometry-first workflows)
-  geometry?: SelectionGeometry;    // Polygon coords (+ optional bounds)
-  has(index: number): boolean;     // Always available
-  computeTimeMs: number;
-}
-```
-
-## Accuracy Tolerances
-
-| Operation | Tolerance | Notes |
-|-----------|-----------|-------|
-| Projection | < 1e-6 px | Screen coordinate match |
-| Unprojection | < 1e-6 | Data coordinate match |
-| Pan/Zoom view state | < 1e-10 | Machine precision |
-| Hit test | Exact | Same point index |
-| Lasso select | Exact | Verified via `has()` |
-
-## Development Workflow
-
-```
-1. Make changes to candidate renderer
-         ↓
-2. npm run bench:accuracy
-   └─ Fix any correctness failures
-         ↓
-3. npm run bench
-   └─ Check performance (before/after)
-         ↓
-4. Log results in research/candidate_optimization_log.md
-         ↓
-5. Repeat until 20M @ 60fps
-```
-
-## Demo Controls
-
-| Action | Effect |
-|--------|--------|
-| **Drag** | Pan view |
-| **Scroll** | Zoom in/out |
-| **Shift+Cmd/Ctrl+Drag** | Lasso select |
-| **Click** | Clear lasso selection |
-| **Double-click** | Clear all selection |
-
-## References
-
-- [Poincaré disk model](https://en.wikipedia.org/wiki/Poincar%C3%A9_disk_model) — Wikipedia
-- [Möbius transformations](https://en.wikipedia.org/wiki/M%C3%B6bius_transformation) — The math behind hyperbolic camera
-- [Apple Embedding Atlas](https://machinelearning.apple.com/research/embedding-atlas) — Inspiration for large-scale embedding viz
-- [Ramer-Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm) — Polygon simplification for lasso
+- [x] Euclidean Geometry
+- [x] Poincaré Disk (Hyperbolic) Geometry
+- [ ] **Spherical Geometry (S²)**: The architecture supports it (`GeometryMode` enum), but the Reference math is missing. Contributions welcome.
 
 ## License
 
-Private repository. All rights reserved.
+MIT © [Matin Mahmood](https://www.linkedin.com/in/matin-mahmood/) (X: [@MatinMnM](https://twitter.com/MatinMnM))
