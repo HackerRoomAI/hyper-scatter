@@ -7,7 +7,7 @@
 **Hyperbolic (Poincaré) embeddings at 60 FPS. 20,000,000 points. Pure WebGL2 (no `regl`, no `three.js`).**
 
 <p align="center">
-  <a href="https://hackerroom-ai.github.io/hyper-scatter/"><strong>🚀 Try the Interactive Demo & Benchmark Playground →</strong></a>
+  <a href="https://hackerroomai.github.io/hyper-scatter/"><strong>🚀 Try the Interactive Demo & Benchmark Playground →</strong></a>
 </p>
 
 <p align="center">
