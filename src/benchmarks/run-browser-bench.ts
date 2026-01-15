@@ -175,6 +175,15 @@ async function runBenchmarks(
   page: Page,
   config: BenchConfig
 ): Promise<BenchmarkReport> {
+  // Wait for VizBenchmark module to be loaded and available on window
+  // This is necessary because ES modules load asynchronously and networkidle0
+  // doesn't guarantee module execution is complete
+  await page.waitForFunction(
+    () => typeof (window as any).VizBenchmark !== 'undefined' && 
+          typeof (window as any).VizBenchmark.runBenchmarks === 'function',
+    { timeout: 10000 }
+  );
+
   // Optionally override canvas CSS size before starting.
   // Width defaults to responsive container width; height defaults to 400px in benchmark.html.
   await page.evaluate((canvasCfg: { width?: number; height?: number }) => {

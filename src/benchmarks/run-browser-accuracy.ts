@@ -136,6 +136,15 @@ async function startDevServer(): Promise<{ proc: ChildProcess; url: string }> {
 }
 
 async function runAccuracy(page: Page): Promise<{ allPassed: boolean; summary: string; reports: any[] }> {
+	// Wait for VizBenchmark module to be loaded and available on window
+	// This is necessary because ES modules load asynchronously and networkidle0
+	// doesn't guarantee module execution is complete
+	await page.waitForFunction(
+		() => typeof (window as any).VizBenchmark !== 'undefined' && 
+		      typeof (window as any).VizBenchmark.runAccuracyBenchmarks === 'function',
+		{ timeout: 10000 }
+	);
+
 	return page.evaluate(async () => {
 		const canvas = document.getElementById('canvas') as HTMLCanvasElement | null;
 		if (!canvas) throw new Error('Canvas element not found');
