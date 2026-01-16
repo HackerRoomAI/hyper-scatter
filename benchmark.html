@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hyper Scatter - Benchmarks</title>
+  <meta name="description" content="Performance benchmarks for Hyper Scatter - WebGL vs Canvas2D rendering.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='none' stroke='%23888' stroke-width='3'/><circle cx='35' cy='40' r='5' fill='%23666'/><circle cx='65' cy='35' r='4' fill='%23666'/><circle cx='50' cy='60' r='6' fill='%23666'/></svg>">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+:root{color-scheme:light dark;--pico-font-size:14px;--pico-line-height:1.4;--viz-bg:#ffffff;--panel-bg:#f8f9fa}
+@media(prefers-color-scheme:dark){:root{--viz-bg:#13171f;--panel-bg:#1b2230}}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{display:flex;flex-direction:column}
+
+header{padding:.2rem .75rem;border-bottom:1px solid var(--pico-muted-border-color)}
+header nav{margin:0;align-items:center}
+header ul{margin:0;padding:0;gap:.75rem}
+header h1{font-size:.8rem;font-weight:500;margin:0;letter-spacing:-.02em}
+header a{font-size:.7rem;opacity:.7}
+header a:hover{opacity:1}
+
+main{flex:1;padding:1rem;overflow-y:auto}
+.container{max-width:1400px;margin:0 auto}
+
+h2{font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--pico-muted-color);margin:1rem 0 .5rem}
+
+.controls{background:var(--panel-bg);padding:1rem;border-radius:var(--pico-border-radius);margin-bottom:1rem;border:1px solid var(--pico-muted-border-color)}
+.control-row{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;margin-bottom:.75rem}
+.control-row:last-child{margin-bottom:0}
+.control-group{display:flex;flex-direction:column;gap:.25rem}
+.control-group label{font-size:.7rem;color:var(--pico-muted-color);text-transform:uppercase;margin-bottom:0}
+select,input[type=number]{padding:.4rem .5rem;font-size:.8rem}
+select[multiple]{min-width:140px}
+
+button{font-size:.8rem;padding:.5rem 1rem}
+button.secondary{background:var(--pico-secondary-background);color:var(--pico-secondary-inverse)}
+
+.progress-container{margin:1rem 0;display:none}
+.progress-container.active{display:block}
+progress{width:100%;height:6px}
+.progress-text{margin-top:.5rem;font-size:.75rem;color:var(--pico-muted-color)}
+
+.canvas-wrap{background:var(--panel-bg);border-radius:var(--pico-border-radius);padding:.5rem;margin-bottom:1rem;border:1px solid var(--pico-muted-border-color)}
+canvas{display:block;width:100%;height:400px;background:var(--viz-bg);border-radius:var(--pico-border-radius)}
+#candidateCanvas{display:none}
+
+.results{background:var(--panel-bg);padding:1rem;border-radius:var(--pico-border-radius);border:1px solid var(--pico-muted-border-color);overflow-x:auto}
+
+.tabs{display:flex;gap:.5rem;margin-bottom:1rem}
+.tabs button{padding:.4rem .75rem;font-size:.75rem;border-radius:var(--pico-border-radius)}
+.tabs button:not(.active){background:transparent;border:1px solid var(--pico-muted-border-color);color:var(--pico-muted-color)}
+
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+.benchmark-table{width:100%;border-collapse:collapse;font-size:.8rem}
+.benchmark-table th,.benchmark-table td{padding:.5rem .75rem;text-align:right;border-bottom:1px solid var(--pico-muted-border-color)}
+.benchmark-table th{font-weight:600;text-transform:uppercase;font-size:.65rem;color:var(--pico-muted-color)}
+.benchmark-table td:first-child,.benchmark-table th:first-child{text-align:left}
+.benchmark-table tr:hover td{background:var(--pico-primary-focus)}
+.benchmark-table .good{color:#22c55e}
+.benchmark-table .warning{color:#f59e0b}
+.benchmark-table .bad{color:#ef4444}
+
+.json-output{background:var(--viz-bg);padding:1rem;border-radius:var(--pico-border-radius);font-family:var(--pico-font-family-monospace);font-size:.7rem;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto}
+
+.test-result{padding:.5rem .75rem;margin:.25rem 0;border-radius:var(--pico-border-radius);font-family:var(--pico-font-family-monospace);font-size:.75rem}
+.test-result.pass{background:rgba(34,197,94,0.1);border-left:3px solid #22c55e}
+.test-result.fail{background:rgba(239,68,68,0.1);border-left:3px solid #ef4444}
+
+.placeholder{color:var(--pico-muted-color);text-align:center;padding:2rem}
+
+footer{padding:.75rem 1.25rem;border-top:1px solid var(--pico-muted-border-color);font-size:.7rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem}
+footer a{font-size:.7rem}
+  </style>
+  <script type="module" crossorigin src="./assets/benchmark-Crul1H9r.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
+</head>
+<body>
+  <header>
+    <nav>
+      <ul><li><h1>Hyper Scatter — Benchmarks</h1></li></ul>
+      <ul><li><a href="index.html">← Back to Demo</a></li></ul>
+    </nav>
+  </header>
+
+  <main>
+    <div class="container">
+      <div class="controls">
+        <div class="control-row">
+          <div class="control-group">
+            <label>Renderer</label>
+            <select id="rendererSelect">
+              <option value="webgl" selected>WebGL</option>
+              <option value="reference">Reference (Canvas2D)</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label>Point Counts</label>
+            <select id="pointCountsSelect" multiple size="4">
+              <option value="1000" selected>1K</option>
+              <option value="10000" selected>10K</option>
+              <option value="50000" selected>50K</option>
+              <option value="100000" selected>100K</option>
+              <option value="250000">250K</option>
+              <option value="500000">500K</option>
+              <option value="1000000">1M</option>
+              <option value="2000000">2M</option>
+              <option value="3000000">3M</option>
+              <option value="5000000">5M</option>
+              <option value="10000000">10M</option>
+              <option value="20000000">20M</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label>Geometries</label>
+            <select id="geometriesSelect" multiple size="2">
+              <option value="euclidean" selected>Euclidean</option>
+              <option value="poincare" selected>Poincaré</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label>Measured Frames</label>
+            <input type="number" id="measuredFrames" value="20" min="5" max="100">
+          </div>
+          <div class="control-group">
+            <label>Hit Test Samples</label>
+            <input type="number" id="hitTestSamples" value="100" min="10" max="1000">
+          </div>
+        </div>
+        <div class="control-row">
+          <button id="runBenchmark">Run Benchmark</button>
+          <button id="runAccuracy" class="secondary">Run Accuracy Tests</button>
+          <button id="copyResults" class="secondary" disabled>Copy JSON</button>
+        </div>
+      </div>
+
+      <div class="progress-container" id="progressContainer">
+        <progress id="progressFill" value="0" max="100"></progress>
+        <div class="progress-text" id="progressText">Initializing...</div>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <canvas id="candidateCanvas"></canvas>
+      </div>
+
+      <div class="results">
+        <div class="tabs">
+          <button class="active" data-tab="table">Results</button>
+          <button data-tab="json">JSON</button>
+          <button data-tab="accuracy">Accuracy</button>
+        </div>
+        <div class="tab-content active" id="tableTab">
+          <div id="resultsTable"><p class="placeholder">Click "Run Benchmark" to start</p></div>
+        </div>
+        <div class="tab-content" id="jsonTab">
+          <div class="json-output" id="jsonOutput">// Results will appear here</div>
+        </div>
+        <div class="tab-content" id="accuracyTab">
+          <div id="accuracyResults"><p class="placeholder">Click "Run Accuracy Tests" to validate correctness</p></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span>Made by <a href="https://matin.ai" target="_blank" rel="noopener noreferrer">Matin Mahmood</a></span>
+    <a href="https://github.com/HackerRoomAI/hyper-scatter" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+
+</body>
+</html>
