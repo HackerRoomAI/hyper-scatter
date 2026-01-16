@@ -139,11 +139,24 @@ async function runAccuracy(page: Page): Promise<{ allPassed: boolean; summary: s
 	// Wait for VizBenchmark module to be loaded and available on window
 	// This is necessary because ES modules load asynchronously and networkidle0
 	// doesn't guarantee module execution is complete
-	await page.waitForFunction(
-		() => typeof (window as any).VizBenchmark !== 'undefined' && 
-		      typeof (window as any).VizBenchmark.runAccuracyBenchmarks === 'function',
-		{ timeout: 10000 }
-	);
+	try {
+		await page.waitForFunction(
+			() => typeof (window as any).VizBenchmark !== 'undefined' && 
+			      typeof (window as any).VizBenchmark.runAccuracyBenchmarks === 'function',
+			{ timeout: 30000 }  // Increased timeout to 30s for slower systems
+		);
+	} catch (err: any) {
+		// If wait times out, get more diagnostic info
+		const pageInfo = await page.evaluate(() => {
+			return {
+				vizBenchmarkExists: typeof (window as any).VizBenchmark !== 'undefined',
+				vizBenchmarkType: typeof (window as any).VizBenchmark,
+				runAccuracyBenchmarksExists: typeof (window as any).VizBenchmark?.runAccuracyBenchmarks !== 'undefined',
+				windowKeys: Object.keys(window).filter(k => k.includes('Viz') || k.includes('benchmark')),
+			};
+		});
+		throw new Error(`Failed to load VizBenchmark module: ${JSON.stringify(pageInfo)}\nOriginal error: ${err?.message || err}`);
+	}
 
 	return page.evaluate(async () => {
 		const canvas = document.getElementById('canvas') as HTMLCanvasElement | null;
@@ -194,6 +207,20 @@ async function main() {
 		});
 
 		const page = await browser.newPage();
+
+		// Capture console errors for debugging
+		page.on('console', msg => {
+			const type = msg.type();
+			if (type === 'error' || type === 'warn') {
+				console.log(`[Browser ${type}]:`, msg.text());
+			}
+		});
+
+		// Capture page errors
+		page.on('pageerror', (error) => {
+			console.error('[Page Error]:', error);
+		});
+
 		// tsx/esbuild may wrap serialized functions passed to page.evaluate() with
 		// __name(...) calls. Define a no-op __name helper in the page context.
 		try {

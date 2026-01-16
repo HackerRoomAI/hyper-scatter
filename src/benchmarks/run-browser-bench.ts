@@ -178,11 +178,24 @@ async function runBenchmarks(
   // Wait for VizBenchmark module to be loaded and available on window
   // This is necessary because ES modules load asynchronously and networkidle0
   // doesn't guarantee module execution is complete
-  await page.waitForFunction(
-    () => typeof (window as any).VizBenchmark !== 'undefined' && 
-          typeof (window as any).VizBenchmark.runBenchmarks === 'function',
-    { timeout: 10000 }
-  );
+  try {
+    await page.waitForFunction(
+      () => typeof (window as any).VizBenchmark !== 'undefined' && 
+            typeof (window as any).VizBenchmark.runBenchmarks === 'function',
+      { timeout: 30000 }  // Increased timeout to 30s for slower systems
+    );
+  } catch (err: any) {
+    // If wait times out, get more diagnostic info
+    const pageInfo = await page.evaluate(() => {
+      return {
+        vizBenchmarkExists: typeof (window as any).VizBenchmark !== 'undefined',
+        vizBenchmarkType: typeof (window as any).VizBenchmark,
+        runBenchmarksExists: typeof (window as any).VizBenchmark?.runBenchmarks !== 'undefined',
+        windowKeys: Object.keys(window).filter(k => k.includes('Viz') || k.includes('benchmark')),
+      };
+    });
+    throw new Error(`Failed to load VizBenchmark module: ${JSON.stringify(pageInfo)}\nOriginal error: ${err?.message || err}`);
+  }
 
   // Optionally override canvas CSS size before starting.
   // Width defaults to responsive container width; height defaults to 400px in benchmark.html.
@@ -457,6 +470,19 @@ async function main() {
     });
 
     const page = await browser.newPage();
+
+    // Capture console errors for debugging
+    page.on('console', msg => {
+      const type = msg.type();
+      if (type === 'error' || type === 'warn') {
+        console.log(`[Browser ${type}]:`, msg.text());
+      }
+    });
+
+    // Capture page errors
+    page.on('pageerror', (error) => {
+      console.error('[Page Error]:', error);
+    });
 
     // Some bundlers/transpilers (notably esbuild) may emit a `__name(fn, name)`
     // helper when serializing functions. Puppeteer executes `page.evaluate`
