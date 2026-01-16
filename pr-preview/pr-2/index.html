@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hyper Scatter</title>
+  <meta name="description" content="Interactive visualization for Euclidean and Hyperbolic (Poincaré disk) embeddings. Render millions of points with WebGL.">
+  <meta name="author" content="Matin Mahmood">
+  <meta property="og:title" content="Hyper Scatter">
+  <meta property="og:description" content="WebGL visualization for Euclidean and Hyperbolic embeddings.">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:creator" content="@MatinMnM">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='none' stroke='%23888' stroke-width='3'/><circle cx='35' cy='40' r='5' fill='%23666'/><circle cx='65' cy='35' r='4' fill='%23666'/><circle cx='50' cy='60' r='6' fill='%23666'/></svg>">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+:root{color-scheme:light dark;--pico-font-size:14px;--pico-line-height:1.4;--viz-bg:#ffffff;--viz-disk:#f2f4f7;--viz-border:#8a9199;--viz-grid:#c9cfd880}
+@media(prefers-color-scheme:dark){:root{--viz-bg:#13171f;--viz-disk:#1b2230;--viz-border:#6b7280;--viz-grid:#2b334266}}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{display:flex;flex-direction:column}
+
+header{padding:.2rem .75rem;border-bottom:1px solid var(--pico-muted-border-color)}
+header nav{margin:0;align-items:center}
+header ul{margin:0;padding:0;gap:.75rem}
+header h1{font-size:.8rem;font-weight:500;margin:0;letter-spacing:-.02em}
+header a{font-size:.7rem;opacity:.7}
+header a:hover{opacity:1}
+
+main{display:flex;flex:1;min-height:0;padding:0}
+
+aside{width:220px;padding:1rem;border-right:1px solid var(--pico-muted-border-color);overflow-y:auto}
+aside h2{font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--pico-muted-color);margin:1.25rem 0 .5rem}
+aside h2:first-child{margin-top:0}
+aside label{font-size:.8rem;margin-bottom:.25rem}
+
+fieldset{border:0;padding:0;margin:0 0 .75rem}
+fieldset legend{font-size:.8rem;margin-bottom:.25rem;padding:0}
+fieldset [role=group]{display:flex;width:100%}
+fieldset [role=group] label{flex:1;text-align:center;margin:0;padding:.4rem .5rem;font-size:.75rem;border-radius:0}
+fieldset [role=group] label:first-of-type{border-radius:var(--pico-border-radius) 0 0 var(--pico-border-radius)}
+fieldset [role=group] label:last-of-type{border-radius:0 var(--pico-border-radius) var(--pico-border-radius) 0}
+fieldset [role=group] input[type=radio]{position:absolute;opacity:0;pointer-events:none}
+fieldset [role=group] input[type=radio]+label{background:var(--pico-form-element-background-color);border:1px solid var(--pico-form-element-border-color);cursor:pointer}
+fieldset [role=group] input[type=radio]:checked+label{background:var(--pico-primary-background);color:var(--pico-primary-inverse);border-color:var(--pico-primary)}
+
+input[type=range]{margin:.25rem 0;height:6px}
+select,input[type=number]{padding:.4rem .5rem;font-size:.8rem}
+
+.slider-row{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:.25rem}
+.slider-row span{font-size:.75rem;color:var(--pico-muted-color);font-family:var(--pico-font-family-monospace)}
+
+details{margin-top:.75rem}
+summary{font-size:.75rem;cursor:pointer;color:var(--pico-muted-color)}
+
+.stats{font-family:var(--pico-font-family-monospace);font-size:.7rem;line-height:1.8}
+.stats div{display:flex;justify-content:space-between}
+.stats span:first-child{color:var(--pico-muted-color)}
+
+.help{font-size:.7rem;color:var(--pico-muted-color);line-height:1.6}
+.help kbd{font-size:.65rem;padding:.1rem .3rem}
+
+.canvas-area{flex:1;display:flex;flex-direction:column;min-width:0}
+.bar{display:flex;align-items:center;gap:.75rem;padding:.5rem .75rem;border-bottom:1px solid var(--pico-muted-border-color);font-size:.7rem}
+.bar .meta{margin-left:auto;display:flex;gap:.5rem;font-family:var(--pico-font-family-monospace)}
+.canvas-wrap{flex:1;position:relative;background:var(--viz-bg)}
+canvas{position:absolute;inset:0;background:var(--viz-bg)}
+#overlayCanvas{pointer-events:none;z-index:1}
+
+footer{padding:.75rem 1.25rem;border-top:1px solid var(--pico-muted-border-color);font-size:.7rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem}
+footer a{font-size:.7rem}
+.social{display:flex;gap:.75rem}
+.social svg{width:12px;height:12px;vertical-align:middle;margin-right:3px;opacity:.6}
+
+@media(max-width:700px){
+  main{flex-direction:column}
+  aside{width:100%;border-right:none;border-bottom:1px solid var(--pico-muted-border-color);max-height:35vh}
+}
+  </style>
+  <script type="module" crossorigin src="./assets/main-CKkTA75B.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/modulepreload-polyfill-B5Qt9EMX.js">
+</head>
+<body>
+  <header>
+    <nav>
+      <ul><li><h1>Hyper Scatter</h1></li></ul>
+      <ul><li><a href="benchmark.html">Benchmarks</a></li><li><a href="https://github.com/HackerRoomAI/hyper-scatter" target="_blank" rel="noopener"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:3px"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>GitHub</a></li></ul>
+    </nav>
+  </header>
+
+  <main>
+    <aside>
+      <fieldset>
+        <legend>Geometry</legend>
+        <div role="group">
+          <input id="geomEuclidean" type="radio" name="geometry" value="euclidean">
+          <label for="geomEuclidean">Euclidean</label>
+          <input id="geomPoincare" type="radio" name="geometry" value="poincare" checked>
+          <label for="geomPoincare">Poincaré</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <div class="slider-row">
+          <legend>Points</legend>
+          <span id="numPointsLabel">250K</span>
+        </div>
+        <input id="numPoints" type="range" min="0" max="10" step="1" value="4">
+      </fieldset>
+
+      <fieldset>
+        <legend>Renderer</legend>
+        <div role="group">
+          <input id="rendWebgl" type="radio" name="renderer" value="webgl" checked>
+          <label for="rendWebgl">WebGL</label>
+          <input id="rendRef" type="radio" name="renderer" value="reference">
+          <label for="rendRef">Reference</label>
+        </div>
+      </fieldset>
+
+      <details>
+        <summary>Advanced</summary>
+        <fieldset style="margin-top:.5rem">
+          <legend>Dataset</legend>
+          <select id="datasetMode">
+            <option value="default">Uniform</option>
+            <option value="clustered" selected>Clustered</option>
+          </select>
+        </fieldset>
+        <fieldset>
+          <div class="slider-row">
+            <legend>Labels</legend>
+            <span id="labelCountLabel">10</span>
+          </div>
+          <input id="labelCount" type="range" min="2" max="20" step="1" value="10">
+        </fieldset>
+        <fieldset>
+          <legend>Seed</legend>
+          <input type="number" id="seed" value="42" min="0">
+        </fieldset>
+      </details>
+
+      <h2>Stats</h2>
+      <div class="stats">
+        <div><span>points</span><span id="statPoints">—</span></div>
+        <div><span>selected</span><span id="statSelected">0</span></div>
+        <div><span>hovered</span><span id="statHovered">—</span></div>
+        <div><span>lasso</span><span id="statLassoTime">—</span></div>
+      </div>
+
+      <h2>Controls</h2>
+      <div class="help">
+        <kbd>Drag</kbd> Pan<br>
+        <kbd>Scroll</kbd> Zoom<br>
+        <kbd>⇧⌘ Drag</kbd> Lasso<br>
+        <kbd>Click</kbd> Clear selection<br>
+        <kbd>Double-click</kbd> Reset view
+      </div>
+    </aside>
+
+    <div class="canvas-area">
+      <div class="bar">
+        <span id="canvasHeader">WebGL</span>
+        <div class="meta">
+          <span id="statFrameTime">—</span>
+          <span id="modeIndicator">PAN</span>
+        </div>
+      </div>
+      <div class="canvas-wrap" id="canvasBody">
+        <canvas id="canvas"></canvas>
+        <canvas id="overlayCanvas"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span>Made by <a href="https://matin.ai" target="_blank" rel="noopener noreferrer">Matin Mahmood</a></span>
+    <div class="social">
+      <a href="https://x.com/MatinMnM" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@MatinMnM</a>
+      <a href="https://linkedin.com/in/matin-mahmood" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 1 1 0-4.125 2.062 2.062 0 0 1 0 4.125zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>LinkedIn</a>
+    </div>
+  </footer>
+
+</body>
+</html>
